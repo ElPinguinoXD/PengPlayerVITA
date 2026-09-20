@@ -1,83 +1,127 @@
-# PengPlayer
+# PengPlayer 0.4
 
-PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado en C++ con VitaSDK y libvita2d.
+PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado en C++ con VitaSDK.
 
-## Estado actual - v0.3
+## Novedades de la version 0.4
 
-La version 0.3 mantiene el motor de audio estable de 0.2 y agrega la primera experiencia visual de reproduccion.
+Esta version introduce una biblioteca musical persistente. PengPlayer deja de depender unicamente del explorador de carpetas y organiza la musica usando los metadatos reales de cada archivo.
 
 ### Biblioteca
 
-- Explora `ux0:/music/` y sus subcarpetas.
-- Detecta MP3, FLAC, WAV, OGG, Opus y AIFF.
-- Orden A-Z / Z-A.
-- Navegacion por carpetas.
-- Mini reproductor persistente.
+La pantalla principal ahora tiene cuatro secciones:
+
+- **Canciones**: todas las pistas encontradas, ordenadas por titulo.
+- **Artistas**: agrupa las canciones por artista.
+- **Albumes**: agrupa las canciones por album.
+- **Carpetas**: agrupa las canciones segun la carpeta donde estan almacenadas y muestra su ruta.
+
+Pulsa `△` para cambiar de seccion.
+
+### Indice persistente
+
+La biblioteca se guarda en:
+
+```text
+ux0:data/PengPlayer/library.dat
+```
+
+Por eso PengPlayer no tiene que releer todos los metadatos cada vez que se abre. El primer escaneo procesa las canciones de forma progresiva para mantener la interfaz activa y, al terminar, guarda el indice.
+
+### Rutas de musica configurables
+
+Desde:
+
+```text
+START > Ajustes > Rutas de musica
+```
+
+puedes añadir carpetas desde:
+
+```text
+ux0:/
+uma0:/
+imc0:/
+```
+
+La configuracion se guarda en:
+
+```text
+ux0:data/PengPlayer/roots.txt
+```
+
+PengPlayer puede escanear varias rutas al mismo tiempo. Esto permite usar, por ejemplo, `ux0:/music/` y otra carpeta de una memoria secundaria.
+
+En el selector de carpetas:
+
+- `X`: entra en una carpeta.
+- `△`: usa la carpeta actual como ruta de musica.
+- `O`: vuelve atras.
+
+En la pantalla de rutas, `□` elimina una ruta configurada. PengPlayer siempre exige que quede al menos una ruta.
+
+### Actualizar la biblioteca
+
+Si copias, eliminas o modificas musica fuera de PengPlayer, usa:
+
+```text
+START > Ajustes > Actualizar biblioteca
+```
+
+El escaneo ocurre mientras la interfaz sigue funcionando y muestra su progreso.
 
 ### Reproduccion
 
-- MP3 / FLAC / WAV / OGG / Opus / AIFF mediante libsndfile.
-- Salida por `SCE_AUDIO_OUT_PORT_TYPE_BGM`.
+Se mantiene todo lo implementado en 0.2 y 0.3:
+
+- MP3, FLAC, WAV, OGG, Opus y AIFF.
+- Inicio de reproduccion practicamente inmediato.
+- Audio estable sin clicks ni pops.
 - Play / pausa.
-- Seek +/- 5 segundos.
-- Cancion anterior / siguiente.
-- Reproduccion continua: al terminar una cancion avanza automaticamente a la siguiente del mismo contexto de reproduccion.
-- Inicio de reproduccion inmediato.
-- Buffer de 2048 frames y reproduccion en hilo independiente.
-- Clipping seguro y ALC desactivado.
+- Seek de -5/+5 segundos.
+- Cancion anterior y siguiente.
+- Reproduccion automatica de la siguiente pista al terminar.
+- Cola basada en la vista desde la que se inicio la reproduccion.
+- Metadatos de titulo, artista, album, genero y ano.
+- Caratulas embebidas en MP3 y FLAC.
+- Caratulas `cover.jpg`, `folder.jpg`, `front.jpg` y `album.jpg`.
+- Pantalla **Ahora suena**.
 
-### Nuevo en 0.3
+## Controles principales
 
-- Lectura de titulo, artista, album, genero, fecha y numero de pista cuando el formato lo expone.
-- Fallback ID3v2 para metadata MP3 comun.
-- Informacion tecnica: formato, frecuencia, canales, bit depth y bitrate aproximado.
-- Caratulas embebidas en MP3 (APIC) y FLAC (PICTURE).
-- Fallback automatico a `cover.jpg/png`, `folder.jpg/png`, `front.jpg/png` o `album.jpg/png` dentro de la carpeta.
-- Mini caratula en el reproductor inferior.
-- Nueva pantalla **Ahora suena** con caratula grande, metadata y progreso.
-- `SELECT` alterna Biblioteca / Ahora suena.
-- La cola temporal de la carpeta se conserva aunque el usuario navegue por otras carpetas.
-
-## Controles
-
-### Biblioteca
-
-- `Arriba / Abajo`: navegar.
-- `X`: entrar en carpeta / reproducir / pausar la cancion activa.
-- `O`: volver a la carpeta anterior.
-- `Triangulo`: alternar A-Z / Z-A.
-- `Cuadrado`: pausa / continuar.
-- `Izquierda / Derecha`: -5 / +5 segundos.
-- `L / R`: cancion anterior / siguiente.
-- `SELECT`: abrir **Ahora suena**.
-- `START`: salir.
-
-### Ahora suena
-
-- `X` o `Cuadrado`: pausa / continuar.
-- `Izquierda / Derecha`: -5 / +5 segundos.
-- `L / R`: cancion anterior / siguiente.
-- `O` o `SELECT`: volver a Biblioteca.
-- `START`: salir.
+| Boton | Accion |
+| --- | --- |
+| `↑ / ↓` | Navegar |
+| `X` | Abrir / reproducir |
+| `△` | Cambiar seccion de biblioteca |
+| `□` | Pausa / continuar |
+| `← / →` | -5 / +5 segundos |
+| `L / R` | Cancion anterior / siguiente |
+| `SELECT` | Abrir / cerrar Ahora suena |
+| `START` | Ajustes |
+| `O` | Volver |
 
 ## Compilacion
 
 ```bash
+cd /d/PROYECTOS/PengPlayer
+rm -rf build
 cmake -B build \
   -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
-
 cmake --build build -j4
 ```
 
-El VPK resultante se genera en `build/PengPlayer.vpk`.
+El VPK se genera en:
 
-## Roadmap
+```text
+build/PengPlayer.vpk
+```
 
-- 0.4: biblioteca indexada y categorias (Canciones / Artistas / Albumes / Generos / Carpetas).
-- 0.5: selector de color y temas.
-- 0.6: visualizadores FFT / waveform.
-- 0.7: playlists, cola, shuffle y repeat.
-- 0.8: caratula personalizada elegida por el usuario desde un selector de imagen, guardada por cancion sin modificar el archivo original.
-- 0.9: background robusto en LiveArea.
-- 1.0: interfaz estable y experiencia completa.
-- 1.1+: plugin para reproduccion durante juegos.
+## Proximos objetivos
+
+- Caratula personalizada por cancion elegida desde la propia app.
+- Selector de color/acento de la interfaz.
+- Playlists y categorias personalizadas.
+- Modos repetir una, repetir todo y aleatorio.
+- Visualizadores de espectro y waveform.
+- Mejoras de busqueda y ordenamiento.
+- Reproduccion avanzada en segundo plano y futura integracion con juegos.
