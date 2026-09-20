@@ -28,6 +28,7 @@ AudioPlayer::AudioPlayer()
       stop_requested_(0),
       pause_requested_(0),
       seek_request_ms_(kNoSeekRequest),
+      finished_event_(0),
       position_ms_(0),
       duration_ms_(0),
       sample_rate_(0),
@@ -50,6 +51,7 @@ bool AudioPlayer::playFile(const std::string& path) {
     stop_requested_.store(0);
     pause_requested_.store(0);
     seek_request_ms_.store(kNoSeekRequest);
+    finished_event_.store(0);
     state_.store(static_cast<int>(State::Loading));
 
     thread_id_ = sceKernelCreateThread(
@@ -92,6 +94,7 @@ void AudioPlayer::stop() {
     stop_requested_.store(0);
     pause_requested_.store(0);
     seek_request_ms_.store(kNoSeekRequest);
+    finished_event_.store(0);
     position_ms_.store(0);
     duration_ms_.store(0);
     sample_rate_.store(0);
@@ -119,6 +122,10 @@ void AudioPlayer::seekRelative(int seconds) {
     int target = position_ms_.load() + seconds * 1000;
     target = std::max(0, std::min(duration, target));
     seek_request_ms_.store(target);
+}
+
+bool AudioPlayer::consumeTrackFinished() {
+    return finished_event_.exchange(0) != 0;
 }
 
 const char* AudioPlayer::stateLabel() const {
@@ -183,13 +190,13 @@ int AudioPlayer::run() {
 
     if (info.channels != 1 && info.channels != 2) {
         sf_close(file);
-        setError("0.2 admite por ahora audio mono o estereo.");
+        setError("0.3 admite por ahora audio mono o estereo.");
         return -1;
     }
 
     if (!isSupportedSampleRate(info.samplerate)) {
         sf_close(file);
-        setError("Frecuencia no compatible aun. 0.2 admite hasta 48 kHz.");
+        setError("Frecuencia no compatible aun. 0.3 admite hasta 48 kHz.");
         return -1;
     }
 
@@ -308,6 +315,9 @@ int AudioPlayer::run() {
         const int duration = duration_ms_.load();
         if (duration > 0) position_ms_.store(duration);
         state_.store(static_cast<int>(State::Stopped));
+        // One-shot event consumed by the UI thread. This lets PengPlayer
+        // distinguish a natural end-of-track from a manual stop/change.
+        finished_event_.store(1);
     }
 
     return 0;

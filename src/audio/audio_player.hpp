@@ -21,6 +21,7 @@ public:
     void stop();
     void togglePause();
     void seekRelative(int seconds);
+    bool consumeTrackFinished();
 
     State state() const { return static_cast<State>(state_.load()); }
     bool hasTrack() const { return !current_path_.empty(); }
@@ -51,6 +52,7 @@ private:
     std::atomic<int> stop_requested_;
     std::atomic<int> pause_requested_;
     std::atomic<int> seek_request_ms_;
+    std::atomic<int> finished_event_;
 
     std::atomic<int> position_ms_;
     std::atomic<int> duration_ms_;

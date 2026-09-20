@@ -1,81 +1,83 @@
 # PengPlayer
 
-PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado con C++ y VitaSDK.
+PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado en C++ con VitaSDK y libvita2d.
 
-## Estado actual: 0.2.3
+## Estado actual - v0.3
 
-La version 0.2 introduce la primera reproduccion real de audio mediante `libsndfile` + `SceAudioOut`.
+La version 0.3 mantiene el motor de audio estable de 0.2 y agrega la primera experiencia visual de reproduccion.
 
-### 0.2.3 - estabilidad de audio
+### Biblioteca
 
-- Buffer de salida aumentado a 4096 frames para dar mas margen al decodificador.
-- Hilo de audio con prioridad superior al hilo generico de la interfaz.
-- Clipping seguro al convertir muestras a PCM signed 16-bit.
-- Escalado correcto para WAV/AIFF de punto flotante.
-- ALC del puerto BGM desactivado explicitamente para evitar procesamiento dinamico durante la reproduccion.
-
-### Funciones
-
-- Navegacion por `ux0:/music/` y subcarpetas.
-- Deteccion de archivos de audio.
-- Reproduccion en streaming, sin cargar la cancion completa en RAM.
-- Puerto `SCE_AUDIO_OUT_PORT_TYPE_BGM` preparado para la futura reproduccion en segundo plano.
-- MP3, FLAC y WAV mediante libsndfile (ademas de otros formatos que libsndfile pueda abrir).
-- Play/Pause.
-- Seek de -5/+5 segundos.
-- Cancion anterior/siguiente dentro de la carpeta actual.
-- Tiempo actual y duracion.
-- Frecuencia de muestreo y canales.
+- Explora `ux0:/music/` y sus subcarpetas.
+- Detecta MP3, FLAC, WAV, OGG, Opus y AIFF.
 - Orden A-Z / Z-A.
+- Navegacion por carpetas.
+- Mini reproductor persistente.
 
-### Limitaciones de 0.2
+### Reproduccion
 
-- Solo mono y estereo.
-- La salida directa admite las frecuencias compatibles con `SceAudioOut` hasta 48 kHz.
-- Archivos de 88.2/96/192 kHz requieren resampling, que se agregara en una version posterior.
-- Todavia no hay metadata, caratulas, biblioteca SQLite ni visualizadores.
+- MP3 / FLAC / WAV / OGG / Opus / AIFF mediante libsndfile.
+- Salida por `SCE_AUDIO_OUT_PORT_TYPE_BGM`.
+- Play / pausa.
+- Seek +/- 5 segundos.
+- Cancion anterior / siguiente.
+- Reproduccion continua: al terminar una cancion avanza automaticamente a la siguiente del mismo contexto de reproduccion.
+- Inicio de reproduccion inmediato.
+- Buffer de 2048 frames y reproduccion en hilo independiente.
+- Clipping seguro y ALC desactivado.
+
+### Nuevo en 0.3
+
+- Lectura de titulo, artista, album, genero, fecha y numero de pista cuando el formato lo expone.
+- Fallback ID3v2 para metadata MP3 comun.
+- Informacion tecnica: formato, frecuencia, canales, bit depth y bitrate aproximado.
+- Caratulas embebidas en MP3 (APIC) y FLAC (PICTURE).
+- Fallback automatico a `cover.jpg/png`, `folder.jpg/png`, `front.jpg/png` o `album.jpg/png` dentro de la carpeta.
+- Mini caratula en el reproductor inferior.
+- Nueva pantalla **Ahora suena** con caratula grande, metadata y progreso.
+- `SELECT` alterna Biblioteca / Ahora suena.
+- La cola temporal de la carpeta se conserva aunque el usuario navegue por otras carpetas.
 
 ## Controles
 
-| Control | Accion |
-|---|---|
-| Arriba / Abajo | Navegar |
-| X | Abrir carpeta / reproducir; sobre la cancion activa alterna pausa |
-| Cuadrado | Play / Pause |
-| Izquierda / Derecha | -5 / +5 segundos |
-| L / R | Cancion anterior / siguiente |
-| Circulo | Carpeta anterior |
-| Triangulo | A-Z / Z-A |
-| START | Salir |
+### Biblioteca
 
-## Dependencias
+- `Arriba / Abajo`: navegar.
+- `X`: entrar en carpeta / reproducir / pausar la cancion activa.
+- `O`: volver a la carpeta anterior.
+- `Triangulo`: alternar A-Z / Z-A.
+- `Cuadrado`: pausa / continuar.
+- `Izquierda / Derecha`: -5 / +5 segundos.
+- `L / R`: cancion anterior / siguiente.
+- `SELECT`: abrir **Ahora suena**.
+- `START`: salir.
 
-```bash
-vdpm install libvita2d libsndfile lame mpg123 opus libvorbis libogg flac
-```
+### Ahora suena
 
-En las versiones actuales de VitaSDK, `vdpm` resuelve automaticamente las dependencias de los paquetes.
+- `X` o `Cuadrado`: pausa / continuar.
+- `Izquierda / Derecha`: -5 / +5 segundos.
+- `L / R`: cancion anterior / siguiente.
+- `O` o `SELECT`: volver a Biblioteca.
+- `START`: salir.
 
 ## Compilacion
 
 ```bash
-rm -rf build
-cmake -B build -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+cmake -B build \
+  -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+
 cmake --build build -j4
 ```
 
-El VPK queda en `build/PengPlayer.vpk`.
+El VPK resultante se genera en `build/PengPlayer.vpk`.
 
+## Roadmap
 
-## 0.2.3
-
-- Reduce el bloque de AudioOut a 2048 frames para disminuir la latencia de inicio y seek.
-- Mantiene clipping seguro y ALC desactivado de 0.2.3.
-
-
-## Correccion 0.2.3
-
-- Elimina el escaneo completo del archivo provocado por `SFC_SET_SCALE_FLOAT_INT_READ`.
-- Mantiene el buffer de 2048 frames, ALC desactivado y el hilo de audio prioritario.
-- WAV/AIFF float se convierten a PCM16 manualmente con clipping seguro, sin analizar toda la cancion antes de reproducir.
-- Objetivo: inicio casi inmediato sin recuperar los clicks/pops de la 0.2.
+- 0.4: biblioteca indexada y categorias (Canciones / Artistas / Albumes / Generos / Carpetas).
+- 0.5: selector de color y temas.
+- 0.6: visualizadores FFT / waveform.
+- 0.7: playlists, cola, shuffle y repeat.
+- 0.8: caratula personalizada elegida por el usuario desde un selector de imagen, guardada por cancion sin modificar el archivo original.
+- 0.9: background robusto en LiveArea.
+- 1.0: interfaz estable y experiencia completa.
+- 1.1+: plugin para reproduccion durante juegos.
