@@ -17,6 +17,7 @@ public:
     void moveUp();
     void moveDown();
     bool enterSelected(std::string& selectedAudioPath);
+    bool selectAdjacentAudio(int direction, std::string& selectedAudioPath);
     bool goBack();
     void toggleSortDirection();
 

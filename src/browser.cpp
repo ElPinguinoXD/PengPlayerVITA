@@ -28,7 +28,7 @@ bool MusicBrowser::isAudioFile(const std::string& name) {
     const std::string ext = lowerCopy(name.substr(dot));
     static const char* kExtensions[] = {
         ".mp3", ".flac", ".wav", ".ogg", ".opus",
-        ".m4a", ".aac", ".aiff", ".aif", ".wma", ".ac3"
+        ".aiff", ".aif"
     };
 
     for (const char* supported : kExtensions) {
@@ -44,7 +44,7 @@ std::string MusicBrowser::joinPath(const std::string& base, const std::string& n
 }
 
 std::string MusicBrowser::parentPath(const std::string& path) {
-    
+    // Keep mount roots such as ux0:/ intact.
     if (path.size() <= 5 && path.find(":/") != std::string::npos) return path;
 
     std::string temp = path;
@@ -142,6 +142,36 @@ bool MusicBrowser::enterSelected(std::string& selectedAudioPath) {
 
     selectedAudioPath = entry.path;
     return true;
+}
+
+bool MusicBrowser::selectAdjacentAudio(int direction, std::string& selectedAudioPath) {
+    if (entries_.empty() || direction == 0) return false;
+
+    int base = selected_;
+    if (!selectedAudioPath.empty()) {
+        for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+            if (!entries_[i].isDirectory && entries_[i].path == selectedAudioPath) {
+                base = i;
+                break;
+            }
+        }
+    }
+
+    const int count = static_cast<int>(entries_.size());
+    for (int step = 1; step <= count; ++step) {
+        int candidate = base + direction * step;
+        while (candidate < 0) candidate += count;
+        candidate %= count;
+
+        if (!entries_[candidate].isDirectory) {
+            selected_ = candidate;
+            selectedAudioPath = entries_[candidate].path;
+            clampSelection();
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool MusicBrowser::goBack() {
