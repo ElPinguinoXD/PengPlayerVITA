@@ -1,11 +1,14 @@
 #pragma once
 
 #include <psp2/types.h>
+#include <array>
 #include <atomic>
 #include <string>
 
 class AudioPlayer {
 public:
+    static constexpr int kVisualizerSamples = 512;
+
     enum class State {
         Stopped = 0,
         Loading,
@@ -36,6 +39,8 @@ public:
     int sampleRate() const { return sample_rate_.load(); }
     int channels() const { return channels_.load(); }
 
+    void getVisualizerSamples(float* out, int count) const;
+
     const char* stateLabel() const;
 
 private:
@@ -58,4 +63,5 @@ private:
     std::atomic<int> duration_ms_;
     std::atomic<int> sample_rate_;
     std::atomic<int> channels_;
+    std::array<std::atomic<int>, kVisualizerSamples> visual_samples_;
 };

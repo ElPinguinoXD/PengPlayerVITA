@@ -33,6 +33,13 @@ void PreferencesManager::setAccentHue(int hue) {
     saveSettings();
 }
 
+void PreferencesManager::setVisualizerMode(int mode) {
+    if (mode < 0) mode = 0;
+    if (mode > 4) mode = 4;
+    visualizer_mode_ = mode;
+    saveSettings();
+}
+
 std::string PreferencesManager::customCoverFor(const std::string& trackPath) const {
     const auto it = custom_covers_.find(trackPath);
     return it == custom_covers_.end() ? std::string() : it->second;
@@ -62,6 +69,7 @@ void PreferencesManager::loadSettings() {
     accent_hue_ = 259;
     int legacyAccent = -1;
     bool loadedHue = false;
+    visualizer_mode_ = 0;
 
     std::FILE* file = std::fopen(kSettingsPath, "rb");
     if (!file) return;
@@ -71,6 +79,7 @@ void PreferencesManager::loadSettings() {
         std::string value = trimLine(line);
         const std::string huePrefix = "accent_hue=";
         const std::string legacyPrefix = "accent=";
+        const std::string visualizerPrefix = "visualizer_mode=";
         if (value.compare(0, huePrefix.size(), huePrefix) == 0) {
             accent_hue_ = std::atoi(value.substr(huePrefix.size()).c_str());
             accent_hue_ %= 360;
@@ -78,6 +87,9 @@ void PreferencesManager::loadSettings() {
             loadedHue = true;
         } else if (value.compare(0, legacyPrefix.size(), legacyPrefix) == 0) {
             legacyAccent = std::atoi(value.substr(legacyPrefix.size()).c_str());
+        } else if (value.compare(0, visualizerPrefix.size(), visualizerPrefix) == 0) {
+            visualizer_mode_ = std::atoi(value.substr(visualizerPrefix.size()).c_str());
+            if (visualizer_mode_ < 0 || visualizer_mode_ > 4) visualizer_mode_ = 0;
         }
     }
     std::fclose(file);
@@ -95,6 +107,7 @@ void PreferencesManager::saveSettings() const {
     std::FILE* file = std::fopen(kSettingsPath, "wb");
     if (!file) return;
     std::fprintf(file, "accent_hue=%d\n", accent_hue_);
+    std::fprintf(file, "visualizer_mode=%d\n", visualizer_mode_);
     std::fclose(file);
 }
 

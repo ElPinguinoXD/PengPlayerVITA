@@ -6,6 +6,7 @@
 #include <vita2d.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -18,6 +19,7 @@
 #include "media/cover_art.hpp"
 #include "library/library_manager.hpp"
 #include "preferences/preferences_manager.hpp"
+#include "visualizer/audio_visualizer.hpp"
 
 namespace {
 constexpr int SCREEN_W = 960;
@@ -316,7 +318,7 @@ void drawHeader(vita2d_pgf* font, const std::string& title, const std::string& s
     vita2d_draw_rectangle(0, 0, SCREEN_W, 72, PANEL);
     drawText(font, 28, 39, 1.18f, TEXT, title);
     drawText(font, 28, 62, 0.62f, MUTED, subtitle);
-    drawText(font, 834, 39, 0.65f, ACCENT, "v0.5");
+    drawText(font, 834, 39, 0.65f, ACCENT, "v0.6");
 }
 
 void drawLibrary(vita2d_pgf* font, const LibraryManager& library, LibraryTab tab,
@@ -411,58 +413,169 @@ void drawGroupTracks(vita2d_pgf* font, const std::string& groupLabel,
     vita2d_swap_buffers();
 }
 
-void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
-                    const CoverArt& cover, const AudioPlayer& player) {
-    vita2d_start_drawing();
-    vita2d_clear_screen();
-    drawHeader(font, "Ahora suena", "O: volver  |  △: opciones de cancion");
-
-    constexpr float coverX = 46.0f;
-    constexpr float coverY = 104.0f;
-    constexpr float coverSize = 316.0f;
-    vita2d_draw_rectangle(coverX - 4, coverY - 4, coverSize + 8, coverSize + 8, PANEL_2);
-    if (cover.hasTexture()) drawTextureSquareCrop(cover.texture(), coverX, coverY, coverSize, coverSize);
-    else drawCoverPlaceholder(font, coverX, coverY, coverSize, coverSize);
-
-    const int infoX = 408;
-    drawText(font, infoX, 132, 1.12f, TEXT, shorten(metadata.title, 38));
-    drawText(font, infoX, 168, 0.84f, ACCENT, shorten(metadata.artist, 44));
-    drawText(font, infoX, 197, 0.68f, MUTED, shorten(metadata.album, 50));
-
-    int y = 247;
-    drawText(font, infoX, y, 0.62f, MUTED, "Formato");
-    drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.formatName);
-    y += 30;
-    drawText(font, infoX, y, 0.62f, MUTED, "Calidad");
-    std::string quality = formatKhz(metadata.sampleRate);
-    if (metadata.bitDepth > 0) {
-        if (!quality.empty()) quality += "  •  ";
-        quality += std::to_string(metadata.bitDepth) + "-bit";
+const char* visualizerName(int mode) {
+    switch (mode) {
+        case 1: return "Espectro";
+        case 2: return "Onda";
+        case 3: return "Circular";
+        case 4: return "Caratula + espectro";
+        case 0:
+        default: return "Caratula";
     }
-    if (metadata.channels > 0) {
-        if (!quality.empty()) quality += "  •  ";
-        quality += metadata.channels == 1 ? "Mono" : "Estereo";
-    }
-    drawText(font, infoX + 112, y, 0.68f, TEXT, quality.empty() ? "-" : quality);
-    y += 30;
-    drawText(font, infoX, y, 0.62f, MUTED, "Bitrate");
-    drawText(font, infoX + 112, y, 0.68f, TEXT,
-             metadata.bitrateKbps > 0 ? std::to_string(metadata.bitrateKbps) + " kbps" : "-");
-    y += 30;
-    drawText(font, infoX, y, 0.62f, MUTED, "Genero");
-    drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.genre.empty() ? "-" : shorten(metadata.genre, 30));
-    y += 30;
-    drawText(font, infoX, y, 0.62f, MUTED, "Ano");
-    drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.date.empty() ? "-" : shorten(metadata.date, 18));
+}
 
-    if (!cover.sourceLabel().empty()) drawText(font, 46, 443, 0.54f, MUTED, "Caratula: " + shorten(cover.sourceLabel(), 38));
+void drawNowPlayingCommon(vita2d_pgf* font, const AudioPlayer& player, int visualizerMode) {
     drawProgressBar(player, 46, 476, 868, 7);
     drawText(font, 46, 505, 0.61f, MUTED, formatTime(player.positionMs()));
     drawText(font, 871, 505, 0.61f, MUTED, formatTime(player.durationMs()));
-    const std::string state = player.isPaused() ? "PAUSADO" : (player.isPlaying() ? "REPRODUCIENDO" : player.stateLabel());
-    drawText(font, 408, 438, 0.62f, ACCENT, state);
-    drawText(font, 245, 531, 0.58f, MUTED, "□ / X pausa   ←/→ -5/+5s   L/R anterior/siguiente   △ opciones");
 
+    const std::string state = player.isPaused() ? "PAUSADO" :
+        (player.isPlaying() ? "REPRODUCIENDO" : player.stateLabel());
+    drawText(font, 46, 464, 0.54f, ACCENT, state);
+    drawText(font, 680, 464, 0.54f, MUTED, std::string("Vista: ") + visualizerName(visualizerMode));
+
+    drawText(font, 56, 531, 0.53f, MUTED,
+             "↑/↓ visualizador   X pausa   ←/→ -5/+5s   L/R anterior/siguiente   △ opciones");
+}
+
+void drawSpectrumBars(const AudioVisualizer& visualizer, float x, float y, float w, float h,
+                      int bars = AudioVisualizer::kBandCount) {
+    const auto& spectrum = visualizer.bands();
+    if (bars < 1) return;
+    const float gap = 6.0f;
+    const float barW = (w - gap * (bars - 1)) / bars;
+    const float baseline = y + h;
+
+    vita2d_draw_line(x, baseline, x + w, baseline, rgba(67, 69, 80));
+    for (int i = 0; i < bars; ++i) {
+        const int source = (i * AudioVisualizer::kBandCount) / bars;
+        const float value = std::max(0.012f, spectrum[source]);
+        const float barH = std::max(3.0f, value * h);
+        const float bx = x + i * (barW + gap);
+        vita2d_draw_rectangle(bx, baseline - barH, barW, barH, ACCENT);
+        vita2d_draw_rectangle(bx, baseline - barH, barW, 2.0f, TEXT);
+    }
+}
+
+void drawWaveform(const AudioVisualizer& visualizer, float x, float y, float w, float h) {
+    const auto& wave = visualizer.waveform();
+    const float center = y + h * 0.5f;
+    const float amplitude = h * 0.43f;
+    vita2d_draw_line(x, center, x + w, center, rgba(67, 69, 80));
+
+    float previousX = x;
+    float previousY = center;
+    constexpr int stride = 2;
+    for (int i = 0; i < AudioVisualizer::kSampleCount; i += stride) {
+        const float px = x + (static_cast<float>(i) / (AudioVisualizer::kSampleCount - 1)) * w;
+        const float py = center - wave[i] * amplitude;
+        if (i > 0) vita2d_draw_line(previousX, previousY, px, py, ACCENT);
+        previousX = px;
+        previousY = py;
+    }
+}
+
+void drawCircularVisualizer(const AudioVisualizer& visualizer, float cx, float cy,
+                            float innerRadius, float maxExtension) {
+    const auto& spectrum = visualizer.bands();
+    constexpr int rays = 64;
+    constexpr float pi = 3.14159265358979323846f;
+
+    vita2d_draw_fill_circle(cx, cy, innerRadius - 8.0f, PANEL_2);
+    for (int i = 0; i < rays; ++i) {
+        const float angle = -pi * 0.5f + (2.0f * pi * i) / rays;
+        const float value = spectrum[i % AudioVisualizer::kBandCount];
+        const float outer = innerRadius + 8.0f + value * maxExtension;
+        const float x0 = cx + std::cos(angle) * innerRadius;
+        const float y0 = cy + std::sin(angle) * innerRadius;
+        const float x1 = cx + std::cos(angle) * outer;
+        const float y1 = cy + std::sin(angle) * outer;
+        vita2d_draw_line(x0, y0, x1, y1, ACCENT);
+    }
+}
+
+void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
+                    const CoverArt& cover, const AudioPlayer& player,
+                    const AudioVisualizer& visualizer, int visualizerMode) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Ahora suena", "↑/↓: cambiar visualizador  |  O: volver  |  △: opciones");
+
+    if (visualizerMode == 0) {
+        constexpr float coverX = 46.0f;
+        constexpr float coverY = 104.0f;
+        constexpr float coverSize = 316.0f;
+        vita2d_draw_rectangle(coverX - 4, coverY - 4, coverSize + 8, coverSize + 8, PANEL_2);
+        if (cover.hasTexture()) drawTextureSquareCrop(cover.texture(), coverX, coverY, coverSize, coverSize);
+        else drawCoverPlaceholder(font, coverX, coverY, coverSize, coverSize);
+
+        const int infoX = 408;
+        drawText(font, infoX, 132, 1.12f, TEXT, shorten(metadata.title, 38));
+        drawText(font, infoX, 168, 0.84f, ACCENT, shorten(metadata.artist, 44));
+        drawText(font, infoX, 197, 0.68f, MUTED, shorten(metadata.album, 50));
+
+        int y = 247;
+        drawText(font, infoX, y, 0.62f, MUTED, "Formato");
+        drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.formatName);
+        y += 30;
+        drawText(font, infoX, y, 0.62f, MUTED, "Calidad");
+        std::string quality = formatKhz(metadata.sampleRate);
+        if (metadata.bitDepth > 0) {
+            if (!quality.empty()) quality += "  •  ";
+            quality += std::to_string(metadata.bitDepth) + "-bit";
+        }
+        if (metadata.channels > 0) {
+            if (!quality.empty()) quality += "  •  ";
+            quality += metadata.channels == 1 ? "Mono" : "Estereo";
+        }
+        drawText(font, infoX + 112, y, 0.68f, TEXT, quality.empty() ? "-" : quality);
+        y += 30;
+        drawText(font, infoX, y, 0.62f, MUTED, "Bitrate");
+        drawText(font, infoX + 112, y, 0.68f, TEXT,
+                 metadata.bitrateKbps > 0 ? std::to_string(metadata.bitrateKbps) + " kbps" : "-");
+        y += 30;
+        drawText(font, infoX, y, 0.62f, MUTED, "Genero");
+        drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.genre.empty() ? "-" : shorten(metadata.genre, 30));
+        y += 30;
+        drawText(font, infoX, y, 0.62f, MUTED, "Ano");
+        drawText(font, infoX + 112, y, 0.68f, TEXT, metadata.date.empty() ? "-" : shorten(metadata.date, 18));
+
+        if (!cover.sourceLabel().empty())
+            drawText(font, 46, 443, 0.54f, MUTED, "Caratula: " + shorten(cover.sourceLabel(), 38));
+    } else if (visualizerMode == 1) {
+        vita2d_draw_rectangle(46, 106, 868, 302, PANEL_2);
+        drawSpectrumBars(visualizer, 70, 134, 820, 238);
+        drawText(font, 70, 414, 0.92f, TEXT, shorten(metadata.title, 53));
+        drawText(font, 70, 439, 0.61f, ACCENT, shorten(metadata.artist, 58));
+    } else if (visualizerMode == 2) {
+        vita2d_draw_rectangle(46, 106, 868, 302, PANEL_2);
+        drawWaveform(visualizer, 70, 132, 820, 238);
+        drawText(font, 70, 414, 0.92f, TEXT, shorten(metadata.title, 53));
+        drawText(font, 70, 439, 0.61f, ACCENT, shorten(metadata.artist, 58));
+    } else if (visualizerMode == 3) {
+        drawCircularVisualizer(visualizer, 480.0f, 262.0f, 118.0f, 82.0f);
+        constexpr float innerCover = 176.0f;
+        const float cx = 480.0f - innerCover * 0.5f;
+        const float cy = 262.0f - innerCover * 0.5f;
+        if (cover.hasTexture()) drawTextureSquareCrop(cover.texture(), cx, cy, innerCover, innerCover);
+        else drawCoverPlaceholder(font, cx, cy, innerCover, innerCover);
+        drawText(font, 250, 411, 0.90f, TEXT, shorten(metadata.title, 46));
+        drawText(font, 340, 437, 0.60f, ACCENT, shorten(metadata.artist, 38));
+    } else {
+        constexpr float coverX = 64.0f;
+        constexpr float coverY = 124.0f;
+        constexpr float coverSize = 248.0f;
+        vita2d_draw_rectangle(coverX - 4, coverY - 4, coverSize + 8, coverSize + 8, PANEL_2);
+        if (cover.hasTexture()) drawTextureSquareCrop(cover.texture(), coverX, coverY, coverSize, coverSize);
+        else drawCoverPlaceholder(font, coverX, coverY, coverSize, coverSize);
+
+        drawSpectrumBars(visualizer, 355, 146, 550, 200, 24);
+        drawText(font, 355, 378, 0.91f, TEXT, shorten(metadata.title, 35));
+        drawText(font, 355, 407, 0.65f, ACCENT, shorten(metadata.artist, 43));
+        drawText(font, 64, 407, 0.58f, MUTED, shorten(metadata.album, 31));
+    }
+
+    drawNowPlayingCommon(font, player, visualizerMode);
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -612,6 +725,8 @@ int main() {
     AudioPlayer player;
     TrackMetadata metadata;
     CoverArt cover;
+    AudioVisualizer visualizer;
+    int visualizerMode = preferences.visualizerMode();
     std::string selectedSong;
 
     Screen screen = Screen::Library;
@@ -728,6 +843,14 @@ int main() {
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
         } else if (screen == Screen::NowPlaying) {
             if (pressed & SCE_CTRL_CROSS) player.togglePause();
+            if (pressed & SCE_CTRL_UP) {
+                visualizerMode = (visualizerMode + 4) % 5;
+                preferences.setVisualizerMode(visualizerMode);
+            }
+            if (pressed & SCE_CTRL_DOWN) {
+                visualizerMode = (visualizerMode + 1) % 5;
+                preferences.setVisualizerMode(visualizerMode);
+            }
             if ((pressed & SCE_CTRL_TRIANGLE) && !selectedSong.empty()) {
                 coverTargetSong = selectedSong;
                 songOptionsSelected = 0;
@@ -885,7 +1008,8 @@ int main() {
             const auto songs = tracksForGroup(library, groupTab, groupKey);
             drawGroupTracks(font, groupLabel, songs, groupSelected, groupScroll, selectedSong, metadata, cover, player);
         } else if (screen == Screen::NowPlaying) {
-            drawNowPlaying(font, metadata, cover, player);
+            visualizer.update(player);
+            drawNowPlaying(font, metadata, cover, player, visualizer, visualizerMode);
         } else if (screen == Screen::Settings) {
             std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Salir de PengPlayer"};
             drawMenu(font, "Ajustes", "Biblioteca y personalizacion", items, settingsSelected,

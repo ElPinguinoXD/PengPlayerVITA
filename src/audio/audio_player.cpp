@@ -10,6 +10,8 @@
 #include <cstring>
 #include <vector>
 
+constexpr int AudioPlayer::kVisualizerSamples;
+
 namespace {
 // 2048 frames keeps enough headroom against underruns while keeping
 // output latency reasonable. Startup delay is handled separately by avoiding
@@ -33,6 +35,7 @@ AudioPlayer::AudioPlayer()
       duration_ms_(0),
       sample_rate_(0),
       channels_(0) {
+    for (auto& sample : visual_samples_) sample.store(0);
 }
 
 AudioPlayer::~AudioPlayer() {
@@ -48,6 +51,7 @@ bool AudioPlayer::playFile(const std::string& path) {
     duration_ms_.store(0);
     sample_rate_.store(0);
     channels_.store(0);
+    for (auto& sample : visual_samples_) sample.store(0);
     stop_requested_.store(0);
     pause_requested_.store(0);
     seek_request_ms_.store(kNoSeekRequest);
@@ -99,6 +103,7 @@ void AudioPlayer::stop() {
     duration_ms_.store(0);
     sample_rate_.store(0);
     channels_.store(0);
+    for (auto& sample : visual_samples_) sample.store(0);
 }
 
 void AudioPlayer::togglePause() {
@@ -122,6 +127,15 @@ void AudioPlayer::seekRelative(int seconds) {
     int target = position_ms_.load() + seconds * 1000;
     target = std::max(0, std::min(duration, target));
     seek_request_ms_.store(target);
+}
+
+void AudioPlayer::getVisualizerSamples(float* out, int count) const {
+    if (!out || count <= 0) return;
+    const int limit = std::min(count, kVisualizerSamples);
+    for (int i = 0; i < limit; ++i) {
+        out[i] = static_cast<float>(visual_samples_[i].load()) / 32768.0f;
+    }
+    for (int i = limit; i < count; ++i) out[i] = 0.0f;
 }
 
 bool AudioPlayer::consumeTrackFinished() {
@@ -290,6 +304,25 @@ int AudioPlayer::run() {
             std::fill(buffer.begin() + firstSilentSample, buffer.end(), 0);
         }
 
+        // Publicamos una copia mono reducida del bloque PCM para los
+        // visualizadores. No toca el audio que se envia a SceAudioOut.
+        const int availableFrames = static_cast<int>(framesRead);
+        for (int i = 0; i < kVisualizerSamples; ++i) {
+            int mono = 0;
+            if (availableFrames > 0) {
+                int frame = (i * availableFrames) / kVisualizerSamples;
+                if (frame >= availableFrames) frame = availableFrames - 1;
+                if (info.channels == 1) {
+                    mono = buffer[frame];
+                } else {
+                    const int left = buffer[frame * 2];
+                    const int right = buffer[frame * 2 + 1];
+                    mono = (left + right) / 2;
+                }
+            }
+            visual_samples_[i].store(mono);
+        }
+
         const int outputResult = sceAudioOutOutput(port, buffer.data());
         if (outputResult < 0) {
             sceAudioOutReleasePort(port);
@@ -310,6 +343,7 @@ int AudioPlayer::run() {
     sceAudioOutOutput(port, nullptr);
     sceAudioOutReleasePort(port);
     sf_close(file);
+    for (auto& sample : visual_samples_) sample.store(0);
 
     if (!stop_requested_.load()) {
         const int duration = duration_ms_.load();
