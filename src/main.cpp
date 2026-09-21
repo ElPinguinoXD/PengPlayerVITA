@@ -1,4 +1,5 @@
 #include <psp2/ctrl.h>
+#include <psp2/apputil.h>
 #include <psp2/io/stat.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/kernel/processmgr.h>
@@ -24,6 +25,7 @@
 #include "playlists/playlist_manager.hpp"
 #include "smart/smart_library_manager.hpp"
 #include "ui/text_input.hpp"
+#include "system/background_playback_manager.hpp"
 
 namespace {
 constexpr int SCREEN_W = 960;
@@ -174,6 +176,7 @@ enum class Screen {
     NowPlaying,
     Settings,
     Appearance,
+    PlaybackSettings,
     SongOptions,
     Roots,
     Mounts,
@@ -422,7 +425,7 @@ void drawHeader(vita2d_pgf* font, const std::string& title, const std::string& s
     vita2d_draw_rectangle(0, 0, SCREEN_W, 72, PANEL);
     drawText(font, 28, 39, 1.18f, TEXT, title);
     drawText(font, 28, 62, 0.62f, MUTED, subtitle);
-    drawText(font, 834, 39, 0.65f, ACCENT, "v0.8");
+    drawText(font, 834, 39, 0.65f, ACCENT, "v0.9");
 }
 
 void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const PlaylistManager& playlists,
@@ -1079,13 +1082,20 @@ void drawFolderPicker(vita2d_pgf* font, const MusicBrowser& browser) {
 }
 
 int main() {
-    sceIoMkdir("ux0:/music", 0777);
-
     vita2d_init();
     vita2d_set_clear_color(BG);
     vita2d_pgf* font = vita2d_load_default_pgf();
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+
+    // AppUtil debe estar inicializado y el almacenamiento de musica montado
+    // ANTES de tocar ux0:/music. Tras un reinicio,
+    // acceder a esta carpeta sin sceAppUtilMusicMount() puede terminar en
+    // errores de acceso como "System error: Not owner".
     TextInput::initialize();
+    const int musicMountResult = sceAppUtilMusicMount();
+    (void)musicMountResult;
+
+    sceIoMkdir("ux0:/music", 0777);
 
     LibraryManager library;
     library.initialize();
@@ -1101,6 +1111,11 @@ int main() {
     smart.initialize();
 
     UI_SCALE = preferences.uiScalePercent() / 100.0f;
+
+    BackgroundPlaybackManager backgroundPlayback;
+    backgroundPlayback.initialize(
+        preferences.backgroundPlaybackEnabled(),
+        preferences.preventAutoSuspend());
 
     AudioPlayer player;
     TrackMetadata metadata;
@@ -1133,6 +1148,7 @@ int main() {
     int appearanceHue = preferences.accentHue();
     int appearanceScale = preferences.uiScalePercent();
     int appearanceField = 0;
+    int playbackSettingsSelected = 0;
     int songOptionsSelected = 0;
     std::string coverTargetSong;
     int rootsSelected = 0;
@@ -1163,7 +1179,13 @@ int main() {
     unsigned int shuffleState = 0xC0FFEEu;
 
     auto startTrack = [&](const std::string& path) {
-        if (!player.playFile(path)) return;
+        // Reserva el BGM antes de que el hilo de audio abra SceAudioOut.
+        // Con ATTRIBUTE=0x01089008 evitamos que Shell suspenda el proceso en LiveArea.
+        backgroundPlayback.setAudioActive(true);
+        if (!player.playFile(path)) {
+            backgroundPlayback.setAudioActive(false);
+            return;
+        }
         selectedSong = path;
         const TrackMetadata* cached = library.findTrack(path);
         metadata = cached ? *cached : MetadataReader::read(path);
@@ -1421,7 +1443,7 @@ int main() {
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = returnScreen;
         } else if (screen == Screen::Settings) {
-            const int count = 5;
+            const int count = 6;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, settingsSelected);
             if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, settingsSelected);
             if (pressed & SCE_CTRL_CROSS) {
@@ -1439,6 +1461,9 @@ int main() {
                     UI_SCALE = appearanceScale / 100.0f;
                     screen = Screen::Appearance;
                 } else if (settingsSelected == 3) {
+                    playbackSettingsSelected = 0;
+                    screen = Screen::PlaybackSettings;
+                } else if (settingsSelected == 4) {
                     playlistsSelected = 0;
                     playlistReturnScreen = Screen::Playlists;
                     screen = Screen::Playlists;
@@ -1477,6 +1502,24 @@ int main() {
                 UI_SCALE = appearanceScale / 100.0f;
                 screen = Screen::Settings;
             }
+        } else if (screen == Screen::PlaybackSettings) {
+            const int count = 3;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, playbackSettingsSelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, playbackSettingsSelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                if (playbackSettingsSelected == 0) {
+                    const bool enabled = !preferences.backgroundPlaybackEnabled();
+                    preferences.setBackgroundPlaybackEnabled(enabled);
+                    backgroundPlayback.setEnabled(enabled);
+                } else if (playbackSettingsSelected == 1) {
+                    const bool enabled = !preferences.preventAutoSuspend();
+                    preferences.setPreventAutoSuspend(enabled);
+                    backgroundPlayback.setPreventAutoSuspend(enabled);
+                } else if (player.isPlaying()) {
+                    backgroundPlayback.requestDisplayOff();
+                }
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Settings;
         } else if (screen == Screen::SongOptions) {
             const int count = 6;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, songOptionsSelected);
@@ -1827,6 +1870,10 @@ int main() {
             if (pressed & SCE_CTRL_RTRIGGER) playAdjacent(1, true);
         }
 
+        const AudioPlayer::State audioState = player.state();
+        backgroundPlayback.setAudioActive(
+            audioState == AudioPlayer::State::Loading || audioState == AudioPlayer::State::Playing);
+
         if (player.consumeTrackFinished()) {
             if (repeatMode == 2 && playbackIndex >= 0) playQueueIndex(playbackIndex);
             else playAdjacent(1, repeatMode == 1);
@@ -1841,12 +1888,38 @@ int main() {
             visualizer.update(player);
             drawNowPlaying(font, metadata, cover, player, visualizer, visualizerMode, shuffleEnabled, repeatMode);
         } else if (screen == Screen::Settings) {
-            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Playlists", "Salir de PengPlayer"};
-            drawMenu(font, "Ajustes", "Biblioteca y personalizacion", items, settingsSelected,
+            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Reproduccion", "Playlists", "Salir de PengPlayer"};
+            drawMenu(font, "Ajustes", "Biblioteca, apariencia y reproduccion", items, settingsSelected,
                      "X: seleccionar  |  O: volver");
         } else if (screen == Screen::Appearance) {
             drawAppearance(font, appearanceHue, preferences.accentHue(),
                            appearanceScale, preferences.uiScalePercent(), appearanceField);
+        } else if (screen == Screen::PlaybackSettings) {
+            const bool bgEnabled = preferences.backgroundPlaybackEnabled();
+            const bool keepAwake = preferences.preventAutoSuspend();
+            std::vector<std::string> items = {
+                std::string("Segundo plano (LiveArea): ") + (bgEnabled ? "ON" : "OFF"),
+                std::string("Evitar suspension mientras suena: ") + (keepAwake ? "ON" : "OFF"),
+                "Apagar pantalla ahora"
+            };
+            std::string subtitle;
+            if (!bgEnabled) {
+                subtitle = "Segundo plano desactivado";
+            } else if (backgroundPlayback.bgmPortAcquired()) {
+                subtitle = "BGM reservado | LiveArea 0x01089008 activo";
+            } else if (backgroundPlayback.lastBgmResult() < 0) {
+                char errorText[96];
+                std::snprintf(errorText, sizeof(errorText),
+                              "BGM no disponible | error 0x%08X",
+                              static_cast<unsigned int>(backgroundPlayback.lastBgmResult()));
+                subtitle = errorText;
+            } else {
+                subtitle = player.isPaused() || !player.hasTrack()
+                    ? "BGM libre mientras no se reproduce"
+                    : "Preparando puerto BGM...";
+            }
+            drawMenu(font, "Reproduccion", subtitle, items, playbackSettingsSelected,
+                     "X: cambiar/ejecutar  |  O: volver");
         } else if (screen == Screen::SongOptions) {
             std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original",
                 "Ver cola de reproduccion", "Anadir a playlist",
@@ -1931,7 +2004,11 @@ int main() {
 
     saveCurrentSession();
     player.stop();
+    backgroundPlayback.setAudioActive(false);
+    backgroundPlayback.shutdown();
     cover.clear();
+    // Liberamos el mount especial de musica antes de cerrar AppUtil.
+    sceAppUtilMusicUmount();
     TextInput::shutdown();
     vita2d_wait_rendering_done();
     vita2d_free_pgf(font);

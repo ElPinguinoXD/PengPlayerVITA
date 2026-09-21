@@ -22,6 +22,12 @@ public:
     int uiScalePercent() const { return ui_scale_percent_; }
     void setUiScalePercent(int percent);
 
+    bool backgroundPlaybackEnabled() const { return background_playback_enabled_; }
+    void setBackgroundPlaybackEnabled(bool enabled);
+
+    bool preventAutoSuspend() const { return prevent_auto_suspend_; }
+    void setPreventAutoSuspend(bool enabled);
+
     std::string customCoverFor(const std::string& trackPath) const;
     bool setCustomCover(const std::string& trackPath, const std::string& imagePath);
     bool removeCustomCover(const std::string& trackPath);
@@ -38,5 +44,7 @@ private:
     bool shuffle_enabled_ = false;
     int repeat_mode_ = 0;
     int ui_scale_percent_ = 100;
+    bool background_playback_enabled_ = true;
+    bool prevent_auto_suspend_ = true;
     std::map<std::string, std::string> custom_covers_;
 };

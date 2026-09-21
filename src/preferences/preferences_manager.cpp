@@ -58,6 +58,16 @@ void PreferencesManager::setUiScalePercent(int percent) {
     saveSettings();
 }
 
+void PreferencesManager::setBackgroundPlaybackEnabled(bool enabled) {
+    background_playback_enabled_ = enabled;
+    saveSettings();
+}
+
+void PreferencesManager::setPreventAutoSuspend(bool enabled) {
+    prevent_auto_suspend_ = enabled;
+    saveSettings();
+}
+
 std::string PreferencesManager::customCoverFor(const std::string& trackPath) const {
     const auto it = custom_covers_.find(trackPath);
     return it == custom_covers_.end() ? std::string() : it->second;
@@ -91,6 +101,8 @@ void PreferencesManager::loadSettings() {
     shuffle_enabled_ = false;
     repeat_mode_ = 0;
     ui_scale_percent_ = 100;
+    background_playback_enabled_ = true;
+    prevent_auto_suspend_ = true;
 
     std::FILE* file = std::fopen(kSettingsPath, "rb");
     if (!file) return;
@@ -104,6 +116,8 @@ void PreferencesManager::loadSettings() {
         const std::string shufflePrefix = "shuffle=";
         const std::string repeatPrefix = "repeat_mode=";
         const std::string uiScalePrefix = "ui_scale=";
+        const std::string backgroundPrefix = "background_playback=";
+        const std::string suspendPrefix = "prevent_auto_suspend=";
         if (value.compare(0, huePrefix.size(), huePrefix) == 0) {
             accent_hue_ = std::atoi(value.substr(huePrefix.size()).c_str());
             accent_hue_ %= 360;
@@ -123,6 +137,10 @@ void PreferencesManager::loadSettings() {
             ui_scale_percent_ = std::atoi(value.substr(uiScalePrefix.size()).c_str());
             if (ui_scale_percent_ < 80) ui_scale_percent_ = 80;
             if (ui_scale_percent_ > 120) ui_scale_percent_ = 120;
+        } else if (value.compare(0, backgroundPrefix.size(), backgroundPrefix) == 0) {
+            background_playback_enabled_ = std::atoi(value.substr(backgroundPrefix.size()).c_str()) != 0;
+        } else if (value.compare(0, suspendPrefix.size(), suspendPrefix) == 0) {
+            prevent_auto_suspend_ = std::atoi(value.substr(suspendPrefix.size()).c_str()) != 0;
         }
     }
     std::fclose(file);
@@ -144,6 +162,8 @@ void PreferencesManager::saveSettings() const {
     std::fprintf(file, "shuffle=%d\n", shuffle_enabled_ ? 1 : 0);
     std::fprintf(file, "repeat_mode=%d\n", repeat_mode_);
     std::fprintf(file, "ui_scale=%d\n", ui_scale_percent_);
+    std::fprintf(file, "background_playback=%d\n", background_playback_enabled_ ? 1 : 0);
+    std::fprintf(file, "prevent_auto_suspend=%d\n", prevent_auto_suspend_ ? 1 : 0);
     std::fclose(file);
 }
 

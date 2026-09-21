@@ -1,56 +1,65 @@
-# PengPlayer 0.8
+# PengPlayer 0.9
 
-Reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado con VitaSDK.
+Reproductor de música nativo y personalizable para PlayStation Vita, desarrollado con VitaSDK.
 
-## Novedades de 0.8
+## Novedades de 0.9
 
-### Biblioteca inteligente
+### Reproducción en segundo plano y LiveArea
 
-La Biblioteca ahora se recorre con `△` entre:
+PengPlayer 0.9 mantiene la reproducción al salir al LiveArea mediante integración con AppMgr, el puerto BGM y una configuración de aplicación compatible con segundo plano.
 
-`Canciones → Artistas → Albumes → Carpetas → Playlists → Favoritos → Categorias → Recientes → Mas reproducidas → Buscar`
+En `START -> Ajustes -> Reproducción` se incluyen:
 
-- **Favoritos:** marca o desmarca la cancion actual desde `Ahora suena > △ > Opciones de cancion`.
-- **Categorias:** crea categorias con nombres personalizados como `Para manejar`, `Noche`, `Acusticas` o cualquier otra.
-- Dentro de una categoria, `△` abre `Anadir canciones`, `□` quita una cancion con confirmacion y `X` reproduce.
-- **Recientes:** conserva las ultimas 50 canciones reproducidas.
-- **Mas reproducidas:** cuenta las reproducciones y ordena las canciones por uso.
-- **Buscar:** usa el teclado nativo de PS Vita para buscar por titulo, artista, album, genero o ruta.
+- `Segundo plano (LiveArea)`: permite mantener el audio al salir de PengPlayer.
+- `Evitar suspensión mientras suena`: evita la suspensión automática completa durante la reproducción.
+- `Apagar pantalla ahora`: apaga el display mientras la música continúa.
 
-Los datos inteligentes se guardan en:
+La reproducción continúa avanzando en LiveArea y el cambio automático a la siguiente canción sigue funcionando fuera de la aplicación.
 
-`ux0:data/PengPlayer/smart_library.dat`
+### Acceso correcto a la biblioteca de música
 
-### Restauracion de sesion
+PengPlayer inicializa AppUtil antes de acceder a `ux0:/music`, monta explícitamente el almacenamiento mediante `sceAppUtilMusicMount()` y lo desmonta limpiamente al salir. Esto evita errores de acceso como `System error: Not owner` después de reiniciar la consola.
 
-PengPlayer guarda periodicamente:
+### Puerto BGM
 
-- Cancion actual.
-- Posicion aproximada.
-- Cola activa.
-- Elemento actual de la cola.
+Cuando el segundo plano está activado, PengPlayer mantiene la propiedad del puerto BGM durante la sesión para evitar conflictos al pausar, reanudar o restaurar una sesión. La pantalla de Reproducción muestra el estado del BGM y el código de error cuando una operación falla.
 
-Al volver a abrir PengPlayer, la sesion se restaura **en pausa** para evitar que la musica empiece a sonar por sorpresa. El archivo se guarda en:
+### Integración de sistema
 
-`ux0:data/PengPlayer/session.dat`
+El `PARAM.SFO` utiliza `ATTRIBUTE=17338376` (`0x01089008`) para permitir la ejecución necesaria durante el uso de LiveArea.
 
-### Escala de interfaz
+## Funciones heredadas
 
-`START > Ajustes > Apariencia` ahora contiene dos ajustes:
+PengPlayer 0.9 conserva todo lo implementado hasta 0.8:
 
-- **Color HUE** libre de 0 a 359 grados.
-- **Escala de interfaz** entre 80% y 120%.
+- MP3, FLAC, WAV, OGG, Opus y AIFF.
+- Reproducción inmediata y sin clicks.
+- Metadata y carátulas.
+- Carátulas personalizadas con crop cuadrado centrado.
+- Biblioteca por canciones, artistas, álbumes y carpetas.
+- Múltiples rutas de música.
+- Playlists con nombres personalizados.
+- Cola editable, shuffle y repetición.
+- Favoritos y categorías.
+- Búsqueda.
+- Recientes y más reproducidas.
+- Restauración de sesión.
+- Visualizadores de espectro, onda y circular.
+- Selector HUE y escala de interfaz.
+- Confirmaciones antes de eliminaciones persistentes.
 
-En Apariencia:
+## Alcance
 
-- `↑/↓`: elegir Color o Escala.
-- En Color: `←/→` cambia 1 grado y `L/R` cambia 10 grados.
-- En Escala: `←/→` cambia 5% y `L/R` cambia 10%.
-- `X`: guardar.
-- `O`: cancelar cambios no guardados.
+La 0.9 se centra en LiveArea, pantalla apagada y reproducción estable en segundo plano. La reproducción simultánea dentro de juegos queda reservada para una versión posterior.
 
-La escala afecta los textos y elementos tipograficos de toda la aplicacion y se guarda en `preferences.cfg`.
+## Compilación
 
-## Funciones conservadas
+```bash
+rm -rf build
+cmake -B build -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+cmake --build build -j4
+```
 
-PengPlayer 0.8 conserva todo lo implementado anteriormente: audio estable mediante SceAudioOut BGM, MP3/FLAC/WAV/OGG/Opus/AIFF, metadata, caratulas embebidas y personalizadas, crop cuadrado, visualizadores, rutas de musica configurables, playlists, cola editable, shuffle, repeticion, auto-siguiente y confirmaciones de eliminacion.
+El VPK se genera en:
+
+`build/PengPlayer.vpk`
