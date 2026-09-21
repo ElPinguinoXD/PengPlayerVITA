@@ -12,10 +12,12 @@
 #include <vector>
 
 #include "browser.hpp"
+#include "image_browser.hpp"
 #include "audio/audio_player.hpp"
 #include "media/metadata.hpp"
 #include "media/cover_art.hpp"
 #include "library/library_manager.hpp"
+#include "preferences/preferences_manager.hpp"
 
 namespace {
 constexpr int SCREEN_W = 960;
@@ -32,9 +34,44 @@ const unsigned int PANEL = rgba(24, 26, 35);
 const unsigned int PANEL_2 = rgba(31, 33, 44);
 const unsigned int TEXT = rgba(245, 245, 248);
 const unsigned int MUTED = rgba(160, 163, 177);
-const unsigned int ACCENT = rgba(153, 102, 255);
-const unsigned int ACCENT_SOFT = rgba(68, 47, 98);
+unsigned int ACCENT = rgba(153, 102, 255);
+unsigned int ACCENT_SOFT = rgba(68, 47, 98);
 const unsigned int ERROR_COLOR = rgba(255, 115, 115);
+
+struct RgbColor {
+    unsigned int r;
+    unsigned int g;
+    unsigned int b;
+};
+
+int normalizeHue(int hue) {
+    hue %= 360;
+    if (hue < 0) hue += 360;
+    return hue;
+}
+
+RgbColor hueToRgb(int hue) {
+    hue = normalizeHue(hue);
+    const int sector = hue / 60;
+    const int offset = hue % 60;
+    const unsigned int rising = static_cast<unsigned int>((offset * 255) / 60);
+    const unsigned int falling = 255U - rising;
+
+    switch (sector) {
+        case 0: return {255U, rising, 0U};
+        case 1: return {falling, 255U, 0U};
+        case 2: return {0U, 255U, rising};
+        case 3: return {0U, falling, 255U};
+        case 4: return {rising, 0U, 255U};
+        default: return {255U, 0U, falling};
+    }
+}
+
+void applyAccentHue(int hue) {
+    const RgbColor color = hueToRgb(hue);
+    ACCENT = rgba(color.r, color.g, color.b);
+    ACCENT_SOFT = rgba(color.r * 35 / 100, color.g * 35 / 100, color.b * 35 / 100);
+}
 
 std::string shorten(const std::string& text, std::size_t maxChars) {
     if (text.size() <= maxChars) return text;
@@ -85,15 +122,20 @@ void drawText(vita2d_pgf* font, int x, int y, float scale, unsigned int color, c
     vita2d_pgf_draw_text(font, x, y, color, scale, text.c_str());
 }
 
-void drawTextureFit(vita2d_texture* texture, float x, float y, float w, float h) {
+void drawTextureSquareCrop(vita2d_texture* texture, float x, float y, float w, float h) {
     if (!texture) return;
     const float tw = static_cast<float>(vita2d_texture_get_width(texture));
     const float th = static_cast<float>(vita2d_texture_get_height(texture));
-    if (tw <= 0.0f || th <= 0.0f) return;
-    const float scale = std::min(w / tw, h / th);
-    const float dw = tw * scale;
-    const float dh = th * scale;
-    vita2d_draw_texture_scale(texture, x + (w - dw) * 0.5f, y + (h - dh) * 0.5f, scale, scale);
+    if (tw <= 0.0f || th <= 0.0f || w <= 0.0f || h <= 0.0f) return;
+
+    // Las caratulas siempre se muestran como un recorte centrado que llena
+    // por completo el cuadro, en vez de dejar bandas vacias.
+    const float sourceSide = std::min(tw, th);
+    const float sourceX = (tw - sourceSide) * 0.5f;
+    const float sourceY = (th - sourceSide) * 0.5f;
+    vita2d_draw_texture_part_scale(
+        texture, x, y, sourceX, sourceY, sourceSide, sourceSide,
+        w / sourceSide, h / sourceSide);
 }
 
 void drawCoverPlaceholder(vita2d_pgf* font, float x, float y, float w, float h) {
@@ -124,9 +166,13 @@ enum class Screen {
     GroupTracks,
     NowPlaying,
     Settings,
+    Appearance,
+    SongOptions,
     Roots,
     Mounts,
-    FolderPicker
+    FolderPicker,
+    CoverMounts,
+    CoverPicker
 };
 
 enum class LibraryTab {
@@ -135,6 +181,7 @@ enum class LibraryTab {
     Albums = 2,
     Folders = 3
 };
+
 
 std::vector<const TrackMetadata*> sortedSongs(const LibraryManager& library) {
     std::vector<const TrackMetadata*> result;
@@ -233,7 +280,7 @@ void drawMiniPlayer(vita2d_pgf* font, const std::string& selectedSong,
 
     if (cover.hasTexture()) {
         vita2d_draw_rectangle(20, 486, 45, 45, PANEL_2);
-        drawTextureFit(cover.texture(), 20, 486, 45, 45);
+        drawTextureSquareCrop(cover.texture(), 20, 486, 45, 45);
     } else {
         vita2d_draw_rectangle(20, 486, 45, 45, ACCENT_SOFT);
         drawText(font, 34, 516, 0.78f, ACCENT,
@@ -269,7 +316,7 @@ void drawHeader(vita2d_pgf* font, const std::string& title, const std::string& s
     vita2d_draw_rectangle(0, 0, SCREEN_W, 72, PANEL);
     drawText(font, 28, 39, 1.18f, TEXT, title);
     drawText(font, 28, 62, 0.62f, MUTED, subtitle);
-    drawText(font, 834, 39, 0.65f, ACCENT, "v0.4");
+    drawText(font, 834, 39, 0.65f, ACCENT, "v0.5");
 }
 
 void drawLibrary(vita2d_pgf* font, const LibraryManager& library, LibraryTab tab,
@@ -368,13 +415,13 @@ void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
                     const CoverArt& cover, const AudioPlayer& player) {
     vita2d_start_drawing();
     vita2d_clear_screen();
-    drawHeader(font, "Ahora suena", "O: volver a biblioteca");
+    drawHeader(font, "Ahora suena", "O: volver  |  △: opciones de cancion");
 
     constexpr float coverX = 46.0f;
     constexpr float coverY = 104.0f;
     constexpr float coverSize = 316.0f;
     vita2d_draw_rectangle(coverX - 4, coverY - 4, coverSize + 8, coverSize + 8, PANEL_2);
-    if (cover.hasTexture()) drawTextureFit(cover.texture(), coverX, coverY, coverSize, coverSize);
+    if (cover.hasTexture()) drawTextureSquareCrop(cover.texture(), coverX, coverY, coverSize, coverSize);
     else drawCoverPlaceholder(font, coverX, coverY, coverSize, coverSize);
 
     const int infoX = 408;
@@ -414,7 +461,7 @@ void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
     drawText(font, 871, 505, 0.61f, MUTED, formatTime(player.durationMs()));
     const std::string state = player.isPaused() ? "PAUSADO" : (player.isPlaying() ? "REPRODUCIENDO" : player.stateLabel());
     drawText(font, 408, 438, 0.62f, ACCENT, state);
-    drawText(font, 306, 531, 0.58f, MUTED, "□ / X pausa   ←/→ -5/+5s   L/R anterior/siguiente");
+    drawText(font, 245, 531, 0.58f, MUTED, "□ / X pausa   ←/→ -5/+5s   L/R anterior/siguiente   △ opciones");
 
     vita2d_end_drawing();
     vita2d_swap_buffers();
@@ -434,6 +481,89 @@ void drawMenu(vita2d_pgf* font, const std::string& title, const std::string& sub
         drawText(font, 48, y, 0.78f, TEXT, shorten(items[i], 82));
     }
     drawText(font, 28, 518, 0.57f, MUTED, footer);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawAppearance(vita2d_pgf* font, int hue, int savedHue) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Apariencia", "Elige libremente el color principal de PengPlayer");
+
+    const int barX = 70;
+    const int barY = 214;
+    const int barW = 820;
+    const int barH = 48;
+    constexpr int segments = 180;
+
+    drawText(font, 70, 138, 0.70f, TEXT, "Color HUE");
+    drawText(font, 70, 169, 0.58f, MUTED, "Izquierda/Derecha: ajuste fino   L/R: cambio rapido");
+
+    // Dibujamos el espectro completo. 180 segmentos (2 grados cada uno)
+    // dan una transicion suave sin cargar innecesariamente la GPU.
+    for (int i = 0; i < segments; ++i) {
+        const int segmentHue = (i * 360) / segments;
+        const RgbColor c = hueToRgb(segmentHue);
+        const float x0 = barX + (static_cast<float>(i) * barW / segments);
+        const float x1 = barX + (static_cast<float>(i + 1) * barW / segments);
+        vita2d_draw_rectangle(x0, barY, x1 - x0 + 1.0f, barH, rgba(c.r, c.g, c.b));
+    }
+
+    const float markerX = barX + (static_cast<float>(normalizeHue(hue)) / 359.0f) * barW;
+    vita2d_draw_rectangle(markerX - 3.0f, barY - 9.0f, 6.0f, barH + 18.0f, TEXT);
+    vita2d_draw_rectangle(markerX - 1.0f, barY - 7.0f, 2.0f, barH + 14.0f, rgba(20, 20, 24));
+
+    const RgbColor selected = hueToRgb(hue);
+    vita2d_draw_rectangle(70, 310, 116, 116, rgba(selected.r, selected.g, selected.b));
+    vita2d_draw_rectangle(78, 318, 100, 100, PANEL_2);
+    vita2d_draw_rectangle(86, 326, 84, 84, rgba(selected.r, selected.g, selected.b));
+
+    char hueLabel[32];
+    std::snprintf(hueLabel, sizeof(hueLabel), "HUE %03d°", normalizeHue(hue));
+    drawText(font, 220, 340, 0.88f, TEXT, hueLabel);
+
+    char rgbLabel[64];
+    std::snprintf(rgbLabel, sizeof(rgbLabel), "RGB %u, %u, %u", selected.r, selected.g, selected.b);
+    drawText(font, 220, 379, 0.67f, MUTED, rgbLabel);
+
+    char hexLabel[32];
+    std::snprintf(hexLabel, sizeof(hexLabel), "#%02X%02X%02X", selected.r, selected.g, selected.b);
+    drawText(font, 220, 412, 0.67f, ACCENT, hexLabel);
+
+    if (normalizeHue(hue) != normalizeHue(savedHue))
+        drawText(font, 690, 412, 0.58f, MUTED, "Sin guardar");
+    else
+        drawText(font, 720, 412, 0.58f, ACCENT, "GUARDADO");
+
+    drawText(font, 28, 518, 0.57f, MUTED, "←/→: 1°  |  L/R: 10°  |  X: guardar  |  O: cancelar");
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawImagePicker(vita2d_pgf* font, const ImageBrowser& browser) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Elegir caratula", "X: abrir/elegir imagen  |  O: atras");
+    vita2d_draw_rectangle(20, 82, 920, 28, PANEL_2);
+    drawText(font, 32, 103, 0.62f, MUTED, shorten(browser.currentPath(), 92));
+
+    const auto& entries = browser.entries();
+    const int start = browser.scrollOffset();
+    const int end = std::min(start + 11, static_cast<int>(entries.size()));
+    if (!browser.lastError().empty()) drawText(font, 32, 150, 0.68f, ERROR_COLOR, browser.lastError());
+    if (entries.empty() && browser.lastError().empty()) {
+        drawText(font, 32, 150, 0.68f, MUTED, "No hay imagenes JPG o PNG en esta carpeta.");
+    }
+    for (int i = start; i < end; ++i) {
+        const int y = 126 + (i - start) * 31;
+        if (i == browser.selectedIndex()) {
+            vita2d_draw_rectangle(20, y - 2, 920, 29, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 29, ACCENT);
+        }
+        drawText(font, 38, y + 19, 0.67f, entries[i].isDirectory ? ACCENT : MUTED,
+                 entries[i].isDirectory ? "[DIR]" : "[IMG]");
+        drawText(font, 126, y + 19, 0.70f, TEXT, shorten(entries[i].name, 70));
+    }
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -475,6 +605,10 @@ int main() {
     LibraryManager library;
     library.initialize();
 
+    PreferencesManager preferences;
+    preferences.initialize();
+    applyAccentHue(preferences.accentHue());
+
     AudioPlayer player;
     TrackMetadata metadata;
     CoverArt cover;
@@ -492,10 +626,15 @@ int main() {
     int groupSelected = 0;
     int groupScroll = 0;
     int settingsSelected = 0;
+    int appearanceHue = preferences.accentHue();
+    int songOptionsSelected = 0;
+    std::string coverTargetSong;
     int rootsSelected = 0;
     int mountsSelected = 0;
+    int coverMountsSelected = 0;
 
     std::unique_ptr<MusicBrowser> folderPicker;
+    std::unique_ptr<ImageBrowser> coverPicker;
     std::vector<std::string> playbackQueue;
     int playbackIndex = -1;
 
@@ -504,7 +643,7 @@ int main() {
         selectedSong = path;
         const TrackMetadata* cached = library.findTrack(path);
         metadata = cached ? *cached : MetadataReader::read(path);
-        cover.loadForTrack(path);
+        cover.loadForTrack(path, preferences.customCoverFor(path));
     };
 
     auto setQueue = [&](const std::vector<const TrackMetadata*>& tracks, int index) {
@@ -589,9 +728,14 @@ int main() {
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
         } else if (screen == Screen::NowPlaying) {
             if (pressed & SCE_CTRL_CROSS) player.togglePause();
+            if ((pressed & SCE_CTRL_TRIANGLE) && !selectedSong.empty()) {
+                coverTargetSong = selectedSong;
+                songOptionsSelected = 0;
+                screen = Screen::SongOptions;
+            }
             if (pressed & SCE_CTRL_CIRCLE) screen = returnScreen;
         } else if (screen == Screen::Settings) {
-            const int count = 3;
+            const int count = 4;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, settingsSelected);
             if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, settingsSelected);
             if (pressed & SCE_CTRL_CROSS) {
@@ -603,11 +747,46 @@ int main() {
                 } else if (settingsSelected == 1) {
                     rootsSelected = 0;
                     screen = Screen::Roots;
+                } else if (settingsSelected == 2) {
+                    appearanceHue = preferences.accentHue();
+                    applyAccentHue(appearanceHue);
+                    screen = Screen::Appearance;
                 } else {
                     running = false;
                 }
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
+        } else if (screen == Screen::Appearance) {
+            bool changed = false;
+            if (pressed & SCE_CTRL_LEFT) { appearanceHue = normalizeHue(appearanceHue - 1); changed = true; }
+            if (pressed & SCE_CTRL_RIGHT) { appearanceHue = normalizeHue(appearanceHue + 1); changed = true; }
+            if (pressed & SCE_CTRL_LTRIGGER) { appearanceHue = normalizeHue(appearanceHue - 10); changed = true; }
+            if (pressed & SCE_CTRL_RTRIGGER) { appearanceHue = normalizeHue(appearanceHue + 10); changed = true; }
+            if (changed) applyAccentHue(appearanceHue);
+            if (pressed & SCE_CTRL_CROSS) {
+                preferences.setAccentHue(appearanceHue);
+                applyAccentHue(appearanceHue);
+            }
+            if (pressed & SCE_CTRL_CIRCLE) {
+                appearanceHue = preferences.accentHue();
+                applyAccentHue(appearanceHue);
+                screen = Screen::Settings;
+            }
+        } else if (screen == Screen::SongOptions) {
+            const int count = 2;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, songOptionsSelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, songOptionsSelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                if (songOptionsSelected == 0) {
+                    coverMountsSelected = 0;
+                    screen = Screen::CoverMounts;
+                } else if (!coverTargetSong.empty()) {
+                    preferences.removeCustomCover(coverTargetSong);
+                    if (coverTargetSong == selectedSong) cover.loadForTrack(selectedSong);
+                    screen = Screen::NowPlaying;
+                }
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::NowPlaying;
         } else if (screen == Screen::Roots) {
             const int count = static_cast<int>(library.roots().size()) + 1;
             clampList(count, 8, rootsSelected, scroll);
@@ -654,6 +833,31 @@ int main() {
             if (pressed & SCE_CTRL_CIRCLE) {
                 if (!folderPicker->goBack()) screen = Screen::Mounts;
             }
+        } else if (screen == Screen::CoverMounts) {
+            const int count = 3;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, coverMountsSelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, coverMountsSelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                static const char* mounts[] = {"ux0:/", "uma0:/", "imc0:/"};
+                coverPicker.reset(new ImageBrowser(mounts[coverMountsSelected]));
+                screen = Screen::CoverPicker;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::SongOptions;
+        } else if (screen == Screen::CoverPicker && coverPicker) {
+            if (pressed & SCE_CTRL_UP) coverPicker->moveUp();
+            if (pressed & SCE_CTRL_DOWN) coverPicker->moveDown();
+            if (pressed & SCE_CTRL_CROSS) {
+                std::string imagePath;
+                if (coverPicker->enterSelected(imagePath) && !coverTargetSong.empty()) {
+                    if (preferences.setCustomCover(coverTargetSong, imagePath)) {
+                        if (coverTargetSong == selectedSong) cover.loadForTrack(selectedSong, imagePath);
+                        screen = Screen::NowPlaying;
+                    }
+                }
+            }
+            if (pressed & SCE_CTRL_CIRCLE) {
+                if (!coverPicker->goBack()) screen = Screen::CoverMounts;
+            }
         }
 
         const bool playbackControls = screen == Screen::Library || screen == Screen::GroupTracks || screen == Screen::NowPlaying;
@@ -683,8 +887,16 @@ int main() {
         } else if (screen == Screen::NowPlaying) {
             drawNowPlaying(font, metadata, cover, player);
         } else if (screen == Screen::Settings) {
-            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Salir de PengPlayer"};
-            drawMenu(font, "Ajustes", "Biblioteca y aplicacion", items, settingsSelected,
+            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Salir de PengPlayer"};
+            drawMenu(font, "Ajustes", "Biblioteca y personalizacion", items, settingsSelected,
+                     "X: seleccionar  |  O: volver");
+        } else if (screen == Screen::Appearance) {
+            drawAppearance(font, appearanceHue, preferences.accentHue());
+        } else if (screen == Screen::SongOptions) {
+            std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original"};
+            const std::string custom = preferences.customCoverFor(coverTargetSong);
+            const std::string subtitle = custom.empty() ? "Sin caratula personalizada" : "Personalizada: " + shorten(custom, 64);
+            drawMenu(font, "Opciones de cancion", subtitle, items, songOptionsSelected,
                      "X: seleccionar  |  O: volver");
         } else if (screen == Screen::Roots) {
             std::vector<std::string> items = library.roots();
@@ -697,6 +909,12 @@ int main() {
                      "X: abrir  |  O: volver");
         } else if (screen == Screen::FolderPicker && folderPicker) {
             drawFolderPicker(font, *folderPicker);
+        } else if (screen == Screen::CoverMounts) {
+            std::vector<std::string> items = {"ux0:/  Memoria principal / SD2Vita", "uma0:/  Almacenamiento secundario", "imc0:/  Memoria interna"};
+            drawMenu(font, "Buscar caratula", "Selecciona donde esta guardada la imagen", items, coverMountsSelected,
+                     "X: abrir  |  O: volver");
+        } else if (screen == Screen::CoverPicker && coverPicker) {
+            drawImagePicker(font, *coverPicker);
         }
 
         sceKernelDelayThread(16000);

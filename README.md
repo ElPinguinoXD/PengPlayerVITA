@@ -1,127 +1,70 @@
-# PengPlayer 0.4
+# PengPlayer 0.5
 
-PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado en C++ con VitaSDK.
+Reproductor de musica nativo y personalizable para PlayStation Vita, construido con VitaSDK, C++ y libvita2d.
 
-## Novedades de la version 0.4
+## Novedades de la version 0.5
 
-Esta version introduce una biblioteca musical persistente. PengPlayer deja de depender unicamente del explorador de carpetas y organiza la musica usando los metadatos reales de cada archivo.
+### Color HUE libre
 
-### Biblioteca
+La apariencia ya no se limita a una lista de colores predeterminados. En:
 
-La pantalla principal ahora tiene cuatro secciones:
+`START -> Ajustes -> Apariencia`
 
-- **Canciones**: todas las pistas encontradas, ordenadas por titulo.
-- **Artistas**: agrupa las canciones por artista.
-- **Albumes**: agrupa las canciones por album.
-- **Carpetas**: agrupa las canciones segun la carpeta donde estan almacenadas y muestra su ruta.
+se muestra una barra HUE con todo el espectro de color.
 
-Pulsa `△` para cambiar de seccion.
+Controles:
 
-### Indice persistente
+- `Izquierda / Derecha`: cambia 1 grado de HUE para ajuste fino.
+- `L / R`: cambia 10 grados para recorrer el espectro rapidamente.
+- `X`: guarda el color elegido.
+- `O`: cancela los cambios no guardados.
 
-La biblioteca se guarda en:
+El color se previsualiza en tiempo real y se guarda en:
 
-```text
-ux0:data/PengPlayer/library.dat
-```
+`ux0:data/PengPlayer/preferences.cfg`
 
-Por eso PengPlayer no tiene que releer todos los metadatos cada vez que se abre. El primer escaneo procesa las canciones de forma progresiva para mantener la interfaz activa y, al terminar, guarda el indice.
+La configuracion anterior basada en presets se migra automaticamente al nuevo sistema HUE.
 
-### Rutas de musica configurables
+### Caratulas personalizadas
 
-Desde:
+Desde `Ahora suena`, pulsa `TRIANGULO` y selecciona `Cambiar caratula` para elegir una imagen JPG, JPEG o PNG desde `ux0:`, `uma0:` o `imc0:`.
 
-```text
-START > Ajustes > Rutas de musica
-```
+PengPlayer guarda la asociacion sin modificar el archivo de audio original:
 
-puedes añadir carpetas desde:
+`ux0:data/PengPlayer/custom_covers.dat`
 
-```text
-ux0:/
-uma0:/
-imc0:/
-```
+Tambien puedes restaurar la caratula original desde el mismo menu.
 
-La configuracion se guarda en:
+### Crop cuadrado centrado
 
-```text
-ux0:data/PengPlayer/roots.txt
-```
+Todas las caratulas se muestran ahora con un recorte cuadrado centrado. Las imagenes horizontales o verticales llenan por completo el cuadro sin deformarse ni dejar bandas vacias. El archivo de imagen original no se modifica: el crop se realiza solamente al renderizar.
 
-PengPlayer puede escanear varias rutas al mismo tiempo. Esto permite usar, por ejemplo, `ux0:/music/` y otra carpeta de una memoria secundaria.
+La prioridad de caratulas es:
 
-En el selector de carpetas:
+1. Caratula personalizada.
+2. Caratula embebida en el archivo.
+3. `cover.jpg`, `folder.jpg`, `front.jpg`, `album.jpg` y equivalentes PNG/JPEG.
+4. Placeholder de PengPlayer.
 
-- `X`: entra en una carpeta.
-- `△`: usa la carpeta actual como ruta de musica.
-- `O`: vuelve atras.
+## Funciones heredadas
 
-En la pantalla de rutas, `□` elimina una ruta configurada. PengPlayer siempre exige que quede al menos una ruta.
-
-### Actualizar la biblioteca
-
-Si copias, eliminas o modificas musica fuera de PengPlayer, usa:
-
-```text
-START > Ajustes > Actualizar biblioteca
-```
-
-El escaneo ocurre mientras la interfaz sigue funcionando y muestra su progreso.
-
-### Reproduccion
-
-Se mantiene todo lo implementado en 0.2 y 0.3:
-
-- MP3, FLAC, WAV, OGG, Opus y AIFF.
-- Inicio de reproduccion practicamente inmediato.
-- Audio estable sin clicks ni pops.
-- Play / pausa.
-- Seek de -5/+5 segundos.
-- Cancion anterior y siguiente.
-- Reproduccion automatica de la siguiente pista al terminar.
-- Cola basada en la vista desde la que se inicio la reproduccion.
-- Metadatos de titulo, artista, album, genero y ano.
-- Caratulas embebidas en MP3 y FLAC.
-- Caratulas `cover.jpg`, `folder.jpg`, `front.jpg` y `album.jpg`.
-- Pantalla **Ahora suena**.
+- Biblioteca: Canciones, Artistas, Albumes y Carpetas.
+- Multiples rutas de musica configurables.
+- Biblioteca persistente.
+- Metadata y caratulas embebidas.
+- Pantalla Ahora suena.
+- Reproduccion automatica de la siguiente cancion.
+- MP3, FLAC, WAV, OGG, OPUS y AIFF.
+- Play, pausa, seek y anterior/siguiente.
+- Audio estable y de inicio inmediato mediante SceAudioOut BGM.
 
 ## Controles principales
 
-| Boton | Accion |
-| --- | --- |
-| `↑ / ↓` | Navegar |
-| `X` | Abrir / reproducir |
-| `△` | Cambiar seccion de biblioteca |
-| `□` | Pausa / continuar |
-| `← / →` | -5 / +5 segundos |
-| `L / R` | Cancion anterior / siguiente |
-| `SELECT` | Abrir / cerrar Ahora suena |
-| `START` | Ajustes |
-| `O` | Volver |
-
-## Compilacion
-
-```bash
-cd /d/PROYECTOS/PengPlayer
-rm -rf build
-cmake -B build \
-  -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
-cmake --build build -j4
-```
-
-El VPK se genera en:
-
-```text
-build/PengPlayer.vpk
-```
-
-## Proximos objetivos
-
-- Caratula personalizada por cancion elegida desde la propia app.
-- Selector de color/acento de la interfaz.
-- Playlists y categorias personalizadas.
-- Modos repetir una, repetir todo y aleatorio.
-- Visualizadores de espectro y waveform.
-- Mejoras de busqueda y ordenamiento.
-- Reproduccion avanzada en segundo plano y futura integracion con juegos.
+- `X`: seleccionar / reproducir / confirmar.
+- `O`: volver.
+- `TRIANGULO`: cambiar seccion o abrir opciones segun la pantalla.
+- `SELECT`: Biblioteca / Ahora suena.
+- `START`: Ajustes.
+- `CUADRADO`: pausa / continuar.
+- `Izquierda / Derecha`: seek de -5 / +5 segundos durante la reproduccion.
+- `L / R`: anterior / siguiente durante la reproduccion.

@@ -12,7 +12,7 @@ public:
     CoverArt(const CoverArt&) = delete;
     CoverArt& operator=(const CoverArt&) = delete;
 
-    bool loadForTrack(const std::string& audioPath);
+    bool loadForTrack(const std::string& audioPath, const std::string& customCoverPath = std::string());
     void clear();
 
     vita2d_texture* texture() const { return texture_; }

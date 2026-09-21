@@ -273,8 +273,13 @@ bool CoverArt::loadFolderImage(const std::string& path) {
     return false;
 }
 
-bool CoverArt::loadForTrack(const std::string& audioPath) {
+bool CoverArt::loadForTrack(const std::string& audioPath, const std::string& customCoverPath) {
     clear();
+
+    if (!customCoverPath.empty() && exists(customCoverPath) && loadImageFile(customCoverPath)) {
+        source_label_ = "Caratula personalizada";
+        return true;
+    }
 
     const std::string ext = extensionOf(audioPath);
     if (ext == "mp3" && loadEmbeddedMp3(audioPath)) return true;
