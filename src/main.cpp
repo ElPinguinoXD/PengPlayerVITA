@@ -6,6 +6,7 @@
 #include <vita2d.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "preferences/preferences_manager.hpp"
 #include "visualizer/audio_visualizer.hpp"
 #include "playlists/playlist_manager.hpp"
+#include "smart/smart_library_manager.hpp"
 #include "ui/text_input.hpp"
 
 namespace {
@@ -40,6 +42,7 @@ const unsigned int TEXT = rgba(245, 245, 248);
 const unsigned int MUTED = rgba(160, 163, 177);
 unsigned int ACCENT = rgba(153, 102, 255);
 unsigned int ACCENT_SOFT = rgba(68, 47, 98);
+float UI_SCALE = 1.0f;
 const unsigned int ERROR_COLOR = rgba(255, 115, 115);
 
 struct RgbColor {
@@ -123,7 +126,7 @@ std::string formatKhz(int sampleRate) {
 }
 
 void drawText(vita2d_pgf* font, int x, int y, float scale, unsigned int color, const std::string& text) {
-    vita2d_pgf_draw_text(font, x, y, color, scale, text.c_str());
+    vita2d_pgf_draw_text(font, x, y, color, scale * UI_SCALE, text.c_str());
 }
 
 void drawTextureSquareCrop(vita2d_texture* texture, float x, float y, float w, float h) {
@@ -182,6 +185,10 @@ enum class Screen {
     PlaylistTracks,
     PlaylistAddSongs,
     AddToPlaylist,
+    CategoryTracks,
+    CategoryAddSongs,
+    AddToCategory,
+    SearchInput,
     ConfirmDelete
 };
 
@@ -189,7 +196,9 @@ enum class ConfirmAction {
     None,
     DeletePlaylist,
     RemovePlaylistTrack,
-    RemoveMusicRoot
+    RemoveMusicRoot,
+    DeleteCategory,
+    RemoveCategoryTrack
 };
 
 enum class LibraryTab {
@@ -197,8 +206,31 @@ enum class LibraryTab {
     Artists = 1,
     Albums = 2,
     Folders = 3,
-    Playlists = 4
+    Playlists = 4,
+    Favorites = 5,
+    Categories = 6,
+    Recent = 7,
+    MostPlayed = 8,
+    Search = 9
 };
+
+constexpr int kLibraryTabCount = 10;
+
+const char* libraryTabName(LibraryTab tab) {
+    switch (tab) {
+        case LibraryTab::Songs: return "Canciones";
+        case LibraryTab::Artists: return "Artistas";
+        case LibraryTab::Albums: return "Albumes";
+        case LibraryTab::Folders: return "Carpetas";
+        case LibraryTab::Playlists: return "Playlists";
+        case LibraryTab::Favorites: return "Favoritos";
+        case LibraryTab::Categories: return "Categorias";
+        case LibraryTab::Recent: return "Recientes";
+        case LibraryTab::MostPlayed: return "Mas reproducidas";
+        case LibraryTab::Search: return "Buscar";
+        default: return "Biblioteca";
+    }
+}
 
 
 std::vector<const TrackMetadata*> sortedSongs(const LibraryManager& library) {
@@ -271,6 +303,47 @@ std::vector<const TrackMetadata*> tracksFromPaths(const LibraryManager& library,
         if (track) result.push_back(track);
     }
     return result;
+}
+
+std::string lowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return c < 128 ? static_cast<char>(std::tolower(c)) : static_cast<char>(c);
+    });
+    return value;
+}
+
+std::vector<const TrackMetadata*> searchTracks(const LibraryManager& library, const std::string& query) {
+    std::vector<const TrackMetadata*> result;
+    const std::string needle = lowerAscii(query);
+    if (needle.empty()) return result;
+    for (const auto& track : library.tracks()) {
+        const std::string haystack = lowerAscii(track.title + "\n" + track.artist + "\n" + track.album + "\n" + track.genre + "\n" + track.path);
+        if (haystack.find(needle) != std::string::npos) result.push_back(&track);
+    }
+    std::sort(result.begin(), result.end(), [](const TrackMetadata* a, const TrackMetadata* b) {
+        if (a->title != b->title) return a->title < b->title;
+        if (a->artist != b->artist) return a->artist < b->artist;
+        return a->path < b->path;
+    });
+    return result;
+}
+
+std::vector<const TrackMetadata*> tracksForSmartTab(const LibraryManager& library,
+                                                      const SmartLibraryManager& smart,
+                                                      LibraryTab tab,
+                                                      const std::string& searchQuery) {
+    if (tab == LibraryTab::Favorites) {
+        auto result = tracksFromPaths(library, smart.favoritePaths());
+        std::sort(result.begin(), result.end(), [](const TrackMetadata* a, const TrackMetadata* b) {
+            if (a->title != b->title) return a->title < b->title;
+            return a->path < b->path;
+        });
+        return result;
+    }
+    if (tab == LibraryTab::Recent) return tracksFromPaths(library, smart.recentPaths());
+    if (tab == LibraryTab::MostPlayed) return tracksFromPaths(library, smart.mostPlayedPaths());
+    if (tab == LibraryTab::Search) return searchTracks(library, searchQuery);
+    return {};
 }
 
 const char* repeatModeName(int mode) {
@@ -349,51 +422,89 @@ void drawHeader(vita2d_pgf* font, const std::string& title, const std::string& s
     vita2d_draw_rectangle(0, 0, SCREEN_W, 72, PANEL);
     drawText(font, 28, 39, 1.18f, TEXT, title);
     drawText(font, 28, 62, 0.62f, MUTED, subtitle);
-    drawText(font, 834, 39, 0.65f, ACCENT, "v0.7");
+    drawText(font, 834, 39, 0.65f, ACCENT, "v0.8");
 }
 
-void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const PlaylistManager& playlists, LibraryTab tab,
-                 int selected, int scroll, const std::string& selectedSong,
+void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const PlaylistManager& playlists,
+                 const SmartLibraryManager& smart, LibraryTab tab, int selected, int scroll,
+                 const std::string& searchQuery, const std::string& selectedSong,
                  const TrackMetadata& metadata, const CoverArt& cover, const AudioPlayer& player) {
     vita2d_start_drawing();
     vita2d_clear_screen();
     drawHeader(font, "PengPlayer", "Biblioteca  |  △ cambiar seccion  |  START ajustes");
 
-    const char* tabs[5] = {"Canciones", "Artistas", "Albumes", "Carpetas", "Playlists"};
-    for (int i = 0; i < 5; ++i) {
-        const int x = 20 + i * 184;
-        const bool active = static_cast<int>(tab) == i;
-        vita2d_draw_rectangle(x, 82, 174, 31, active ? ACCENT_SOFT : PANEL_2);
-        if (active) vita2d_draw_rectangle(x, 110, 174, 3, ACCENT);
-        drawText(font, x + 10, 104, 0.60f, active ? TEXT : MUTED, tabs[i]);
-    }
+    const int tabIndex = static_cast<int>(tab);
+    const LibraryTab prevTab = static_cast<LibraryTab>((tabIndex + kLibraryTabCount - 1) % kLibraryTabCount);
+    const LibraryTab nextTab = static_cast<LibraryTab>((tabIndex + 1) % kLibraryTabCount);
+    vita2d_draw_rectangle(20, 82, 250, 31, PANEL_2);
+    vita2d_draw_rectangle(280, 82, 400, 31, ACCENT_SOFT);
+    vita2d_draw_rectangle(690, 82, 250, 31, PANEL_2);
+    vita2d_draw_rectangle(280, 110, 400, 3, ACCENT);
+    drawText(font, 34, 104, 0.54f, MUTED, std::string("< ") + libraryTabName(prevTab));
+    drawText(font, 414, 104, 0.66f, TEXT, libraryTabName(tab));
+    drawText(font, 735, 104, 0.54f, MUTED, std::string(libraryTabName(nextTab)) + " >");
 
     if (library.isScanning()) {
         const int total = library.scanTotal();
         const int done = library.scanProcessed();
-        const std::string scan = "Escaneando biblioteca: " + std::to_string(done) + " / " + std::to_string(total);
-        drawText(font, 28, 137, 0.56f, ACCENT, scan);
+        drawText(font, 28, 137, 0.56f, ACCENT,
+                 "Escaneando biblioteca: " + std::to_string(done) + " / " + std::to_string(total));
     } else {
-        drawText(font, 28, 137, 0.56f, MUTED,
-                 std::to_string(library.tracks().size()) + " canciones  |  " + shorten(library.statusMessage(), 60));
+        std::string line = std::to_string(library.tracks().size()) + " canciones";
+        if (tab == LibraryTab::Search && !searchQuery.empty()) line += "  |  Busqueda: " + shorten(searchQuery, 45);
+        else line += "  |  " + shorten(library.statusMessage(), 58);
+        drawText(font, 28, 137, 0.56f, MUTED, line);
     }
 
     const int listTop = 150;
-    if (tab == LibraryTab::Songs) {
-        const auto songs = sortedSongs(library);
+    const bool smartTrackTab = tab == LibraryTab::Favorites || tab == LibraryTab::Recent ||
+                               tab == LibraryTab::MostPlayed;
+
+    if (tab == LibraryTab::Songs || smartTrackTab) {
+        std::vector<const TrackMetadata*> songs = tab == LibraryTab::Songs
+            ? sortedSongs(library)
+            : tracksForSmartTab(library, smart, tab, searchQuery);
         const int end = std::min(scroll + VISIBLE_ROWS, static_cast<int>(songs.size()));
-        if (songs.empty()) drawText(font, 30, 188, 0.74f, MUTED, "La biblioteca esta vacia. Usa START > Actualizar biblioteca.");
+        if (songs.empty()) {
+            std::string empty = "No hay canciones para mostrar.";
+            if (tab == LibraryTab::Favorites) empty = "Aun no tienes favoritos. Marcalos desde Opciones de cancion.";
+            else if (tab == LibraryTab::Recent) empty = "Todavia no has reproducido canciones en PengPlayer.";
+            else if (tab == LibraryTab::MostPlayed) empty = "Las canciones mas reproducidas apareceran aqui.";
+            drawText(font, 30, 188, 0.70f, MUTED, empty);
+        }
         for (int i = scroll; i < end; ++i) {
             const int y = listTop + (i - scroll) * ROW_H;
             if (i == selected) {
                 vita2d_draw_rectangle(20, y - 2, 920, ROW_H - 2, ACCENT_SOFT);
                 vita2d_draw_rectangle(20, y - 2, 5, ROW_H - 2, ACCENT);
             }
-            drawText(font, 38, y + 17, 0.71f, TEXT, shorten(songs[i]->title, 52));
+            std::string prefix = smart.isFavorite(songs[i]->path) ? "[F] " : "";
+            drawText(font, 38, y + 17, 0.69f, TEXT, shorten(prefix + songs[i]->title, 51));
             std::string detail = songs[i]->artist;
-            if (!songs[i]->album.empty() && songs[i]->album != "Album desconocido") detail += "  •  " + songs[i]->album;
-            drawText(font, 520, y + 17, 0.54f, MUTED, shorten(detail, 47));
+            if (tab == LibraryTab::MostPlayed) detail = std::to_string(smart.playCount(songs[i]->path)) + " reproducciones  |  " + detail;
+            drawText(font, 550, y + 17, 0.52f, MUTED, shorten(detail, 42));
         }
+    } else if (tab == LibraryTab::Search) {
+        const auto songs = searchTracks(library, searchQuery);
+        const int total = static_cast<int>(songs.size()) + 1;
+        const int end = std::min(scroll + VISIBLE_ROWS, total);
+        for (int i = scroll; i < end; ++i) {
+            const int y = listTop + (i - scroll) * ROW_H;
+            if (i == selected) {
+                vita2d_draw_rectangle(20, y - 2, 920, ROW_H - 2, ACCENT_SOFT);
+                vita2d_draw_rectangle(20, y - 2, 5, ROW_H - 2, ACCENT);
+            }
+            if (i == 0) {
+                drawText(font, 38, y + 17, 0.70f, ACCENT,
+                         searchQuery.empty() ? "+ Escribir busqueda" : "Buscar de nuevo: " + shorten(searchQuery, 55));
+                drawText(font, 795, y + 17, 0.50f, MUTED, "X teclado");
+            } else {
+                const TrackMetadata* track = songs[i - 1];
+                drawText(font, 38, y + 17, 0.69f, TEXT, shorten(track->title, 52));
+                drawText(font, 570, y + 17, 0.52f, MUTED, shorten(track->artist, 34));
+            }
+        }
+        if (!searchQuery.empty() && songs.empty()) drawText(font, 30, 222, 0.64f, MUTED, "No se encontraron coincidencias.");
     } else if (tab == LibraryTab::Playlists) {
         const int playlistCount = static_cast<int>(playlists.playlists().size());
         const int total = playlistCount + 1;
@@ -406,12 +517,30 @@ void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const Playlist
             }
             if (i == playlistCount) {
                 drawText(font, 38, y + 17, 0.71f, ACCENT, "+ Crear nueva playlist");
-                drawText(font, 720, y + 17, 0.52f, MUTED, "X para crear");
             } else {
                 const Playlist& playlist = playlists.playlists()[i];
                 drawText(font, 38, y + 17, 0.71f, TEXT, shorten(playlist.name, 58));
                 drawText(font, 790, y + 17, 0.54f, MUTED,
                          std::to_string(playlist.tracks.size()) + (playlist.tracks.size() == 1 ? " cancion" : " canciones"));
+            }
+        }
+    } else if (tab == LibraryTab::Categories) {
+        const int categoryCount = static_cast<int>(smart.categories().size());
+        const int total = categoryCount + 1;
+        const int end = std::min(scroll + VISIBLE_ROWS, total);
+        for (int i = scroll; i < end; ++i) {
+            const int y = listTop + (i - scroll) * ROW_H;
+            if (i == selected) {
+                vita2d_draw_rectangle(20, y - 2, 920, ROW_H - 2, ACCENT_SOFT);
+                vita2d_draw_rectangle(20, y - 2, 5, ROW_H - 2, ACCENT);
+            }
+            if (i == categoryCount) {
+                drawText(font, 38, y + 17, 0.71f, ACCENT, "+ Crear nueva categoria");
+            } else {
+                const SmartCategory& category = smart.categories()[i];
+                drawText(font, 38, y + 17, 0.71f, TEXT, shorten(category.name, 58));
+                drawText(font, 790, y + 17, 0.54f, MUTED,
+                         std::to_string(category.tracks.size()) + (category.tracks.size() == 1 ? " cancion" : " canciones"));
             }
         }
     } else {
@@ -425,12 +554,9 @@ void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const Playlist
                 vita2d_draw_rectangle(20, y - 2, 5, ROW_H - 2, ACCENT);
             }
             drawText(font, 38, y + 17, 0.71f, TEXT, shorten(groups[i].label, 54));
-            if (tab == LibraryTab::Folders) {
-                drawText(font, 470, y + 17, 0.51f, MUTED, shorten(groups[i].key, 47));
-            } else {
-                drawText(font, 790, y + 17, 0.54f, MUTED,
-                         std::to_string(groups[i].count) + (groups[i].count == 1 ? " cancion" : " canciones"));
-            }
+            if (tab == LibraryTab::Folders) drawText(font, 470, y + 17, 0.51f, MUTED, shorten(groups[i].key, 47));
+            else drawText(font, 790, y + 17, 0.54f, MUTED,
+                          std::to_string(groups[i].count) + (groups[i].count == 1 ? " cancion" : " canciones"));
         }
     }
 
@@ -471,7 +597,7 @@ void drawPlaylistTracks(vita2d_pgf* font, const std::string& playlistName,
     vita2d_start_drawing();
     vita2d_clear_screen();
     drawHeader(font, shorten(playlistName, 42),
-               "X reproducir  |  △ anadir canciones  |  SELECT ahora suena  |  START ajustes");
+               "X reproducir  |  △ anadir canciones  |  □ quitar  |  SELECT ahora suena");
 
     const int listTop = 92;
     const int visible = 10;
@@ -521,6 +647,64 @@ void drawPlaylistAddSongs(vita2d_pgf* font, const LibraryManager& library, const
         drawText(font, 615, y + 18, 0.52f, MUTED, shorten(songs[i]->artist, 25));
     }
 
+    drawMiniPlayer(font, selectedSong, metadata, cover, player);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+
+void drawCategoryTracks(vita2d_pgf* font, const std::string& categoryName,
+                        const std::vector<const TrackMetadata*>& songs, int selected, int scroll,
+                        const std::string& selectedSong, const TrackMetadata& metadata,
+                        const CoverArt& cover, const AudioPlayer& player) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, shorten(categoryName, 42),
+               "X reproducir  |  △ anadir canciones  |  □ quitar  |  SELECT ahora suena");
+
+    const int listTop = 92;
+    const int visible = 10;
+    const int end = std::min(scroll + visible, static_cast<int>(songs.size()));
+    if (songs.empty()) drawText(font, 30, 145, 0.72f, MUTED, "Esta categoria esta vacia. Pulsa △ para anadir canciones.");
+    for (int i = scroll; i < end; ++i) {
+        const int y = listTop + (i - scroll) * 36;
+        if (i == selected) {
+            vita2d_draw_rectangle(20, y - 2, 920, 34, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 34, ACCENT);
+        }
+        drawText(font, 38, y + 18, 0.72f, TEXT, shorten(songs[i]->title, 56));
+        drawText(font, 590, y + 18, 0.53f, MUTED, shorten(songs[i]->artist, 28));
+    }
+    drawMiniPlayer(font, selectedSong, metadata, cover, player);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawCategoryAddSongs(vita2d_pgf* font, const LibraryManager& library,
+                          const SmartLibraryManager& smart, const std::string& categoryName,
+                          int selected, int scroll, const std::string& selectedSong,
+                          const TrackMetadata& metadata, const CoverArt& cover, const AudioPlayer& player) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Anadir a categoria", shorten(categoryName, 44) + "  |  X anadir  |  O volver");
+
+    const auto songs = sortedSongs(library);
+    const SmartCategory* category = smart.findCategory(categoryName);
+    const int listTop = 92;
+    const int visible = 10;
+    const int end = std::min(scroll + visible, static_cast<int>(songs.size()));
+    for (int i = scroll; i < end; ++i) {
+        const int y = listTop + (i - scroll) * 36;
+        if (i == selected) {
+            vita2d_draw_rectangle(20, y - 2, 920, 34, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 34, ACCENT);
+        }
+        const bool alreadyAdded = category &&
+            std::find(category->tracks.begin(), category->tracks.end(), songs[i]->path) != category->tracks.end();
+        drawText(font, 38, y + 18, 0.60f, alreadyAdded ? ACCENT : MUTED, alreadyAdded ? "[OK]" : "[ +]");
+        drawText(font, 96, y + 18, 0.70f, TEXT, shorten(songs[i]->title, 49));
+        drawText(font, 615, y + 18, 0.52f, MUTED, shorten(songs[i]->artist, 25));
+    }
     drawMiniPlayer(font, selectedSong, metadata, cover, player);
     vita2d_end_drawing();
     vita2d_swap_buffers();
@@ -778,57 +962,64 @@ void drawQueue(vita2d_pgf* font, const LibraryManager& library,
     vita2d_swap_buffers();
 }
 
-void drawAppearance(vita2d_pgf* font, int hue, int savedHue) {
+void drawAppearance(vita2d_pgf* font, int hue, int savedHue,
+                    int scalePercent, int savedScalePercent, int selectedField) {
     vita2d_start_drawing();
     vita2d_clear_screen();
-    drawHeader(font, "Apariencia", "Elige libremente el color principal de PengPlayer");
+    drawHeader(font, "Apariencia", "Color y escala general de la interfaz");
 
     const int barX = 70;
-    const int barY = 214;
     const int barW = 820;
-    const int barH = 48;
+    const int hueY = 190;
+    const int barH = 38;
     constexpr int segments = 180;
 
-    drawText(font, 70, 138, 0.70f, TEXT, "Color HUE");
-    drawText(font, 70, 169, 0.58f, MUTED, "Izquierda/Derecha: ajuste fino   L/R: cambio rapido");
-
-    // Dibujamos el espectro completo. 180 segmentos (2 grados cada uno)
-    // dan una transicion suave sin cargar innecesariamente la GPU.
+    if (selectedField == 0) {
+        vita2d_draw_rectangle(52, 122, 856, 122, ACCENT_SOFT);
+        vita2d_draw_rectangle(52, 122, 5, 122, ACCENT);
+    }
+    drawText(font, 70, 151, 0.68f, TEXT, "Color HUE");
+    drawText(font, 640, 151, 0.50f, MUTED, "←/→ 1°   L/R 10°");
     for (int i = 0; i < segments; ++i) {
         const int segmentHue = (i * 360) / segments;
         const RgbColor c = hueToRgb(segmentHue);
         const float x0 = barX + (static_cast<float>(i) * barW / segments);
         const float x1 = barX + (static_cast<float>(i + 1) * barW / segments);
-        vita2d_draw_rectangle(x0, barY, x1 - x0 + 1.0f, barH, rgba(c.r, c.g, c.b));
+        vita2d_draw_rectangle(x0, hueY, x1 - x0 + 1.0f, barH, rgba(c.r, c.g, c.b));
     }
-
     const float markerX = barX + (static_cast<float>(normalizeHue(hue)) / 359.0f) * barW;
-    vita2d_draw_rectangle(markerX - 3.0f, barY - 9.0f, 6.0f, barH + 18.0f, TEXT);
-    vita2d_draw_rectangle(markerX - 1.0f, barY - 7.0f, 2.0f, barH + 14.0f, rgba(20, 20, 24));
+    vita2d_draw_rectangle(markerX - 3.0f, hueY - 6.0f, 6.0f, barH + 12.0f, TEXT);
 
     const RgbColor selected = hueToRgb(hue);
-    vita2d_draw_rectangle(70, 310, 116, 116, rgba(selected.r, selected.g, selected.b));
-    vita2d_draw_rectangle(78, 318, 100, 100, PANEL_2);
-    vita2d_draw_rectangle(86, 326, 84, 84, rgba(selected.r, selected.g, selected.b));
+    char colorLabel[96];
+    std::snprintf(colorLabel, sizeof(colorLabel), "HUE %03d°   RGB %u,%u,%u   #%02X%02X%02X",
+                  normalizeHue(hue), selected.r, selected.g, selected.b,
+                  selected.r, selected.g, selected.b);
+    drawText(font, 70, 242, 0.57f, ACCENT, colorLabel);
 
-    char hueLabel[32];
-    std::snprintf(hueLabel, sizeof(hueLabel), "HUE %03d°", normalizeHue(hue));
-    drawText(font, 220, 340, 0.88f, TEXT, hueLabel);
+    if (selectedField == 1) {
+        vita2d_draw_rectangle(52, 270, 856, 152, ACCENT_SOFT);
+        vita2d_draw_rectangle(52, 270, 5, 152, ACCENT);
+    }
+    drawText(font, 70, 302, 0.68f, TEXT, "Escala de interfaz");
+    drawText(font, 640, 302, 0.50f, MUTED, "←/→ 5%   L/R 10%");
 
-    char rgbLabel[64];
-    std::snprintf(rgbLabel, sizeof(rgbLabel), "RGB %u, %u, %u", selected.r, selected.g, selected.b);
-    drawText(font, 220, 379, 0.67f, MUTED, rgbLabel);
+    vita2d_draw_rectangle(70, 327, 820, 18, PANEL_2);
+    const float scaleProgress = static_cast<float>(scalePercent - 80) / 40.0f;
+    vita2d_draw_rectangle(70, 327, 820.0f * std::max(0.0f, std::min(1.0f, scaleProgress)), 18, ACCENT);
+    const float scaleMarker = 70.0f + 820.0f * scaleProgress;
+    vita2d_draw_rectangle(scaleMarker - 3.0f, 320, 6, 32, TEXT);
 
-    char hexLabel[32];
-    std::snprintf(hexLabel, sizeof(hexLabel), "#%02X%02X%02X", selected.r, selected.g, selected.b);
-    drawText(font, 220, 412, 0.67f, ACCENT, hexLabel);
+    drawText(font, 70, 382, 0.62f, MUTED, "80%");
+    drawText(font, 449, 382, 0.62f, MUTED, "100%");
+    drawText(font, 838, 382, 0.62f, MUTED, "120%");
+    drawText(font, 70, 414, 0.72f, TEXT, "Vista previa: PengPlayer • Musica • 123");
+    drawText(font, 700, 414, 0.70f, ACCENT, std::to_string(scalePercent) + "%");
 
-    if (normalizeHue(hue) != normalizeHue(savedHue))
-        drawText(font, 690, 412, 0.58f, MUTED, "Sin guardar");
-    else
-        drawText(font, 720, 412, 0.58f, ACCENT, "GUARDADO");
-
-    drawText(font, 28, 518, 0.57f, MUTED, "←/→: 1°  |  L/R: 10°  |  X: guardar  |  O: cancelar");
+    const bool dirty = normalizeHue(hue) != normalizeHue(savedHue) || scalePercent != savedScalePercent;
+    drawText(font, 28, 518, 0.55f, dirty ? MUTED : ACCENT,
+             dirty ? "↑/↓ elegir ajuste  |  X guardar  |  O cancelar   •   Sin guardar"
+                   : "↑/↓ elegir ajuste  |  X guardar  |  O volver   •   Guardado");
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -906,6 +1097,11 @@ int main() {
     PlaylistManager playlists;
     playlists.initialize();
 
+    SmartLibraryManager smart;
+    smart.initialize();
+
+    UI_SCALE = preferences.uiScalePercent() / 100.0f;
+
     AudioPlayer player;
     TrackMetadata metadata;
     CoverArt cover;
@@ -935,6 +1131,8 @@ int main() {
     int groupScroll = 0;
     int settingsSelected = 0;
     int appearanceHue = preferences.accentHue();
+    int appearanceScale = preferences.uiScalePercent();
+    int appearanceField = 0;
     int songOptionsSelected = 0;
     std::string coverTargetSong;
     int rootsSelected = 0;
@@ -949,6 +1147,13 @@ int main() {
     int playlistAddScroll = 0;
     int addPlaylistSelected = 0;
     std::string activePlaylist;
+    int categoryTracksSelected = 0;
+    int categoryTracksScroll = 0;
+    int categoryAddSelected = 0;
+    int categoryAddScroll = 0;
+    int addCategorySelected = 0;
+    std::string activeCategory;
+    std::string searchQuery;
 
     std::unique_ptr<MusicBrowser> folderPicker;
     std::unique_ptr<ImageBrowser> coverPicker;
@@ -963,6 +1168,7 @@ int main() {
         const TrackMetadata* cached = library.findTrack(path);
         metadata = cached ? *cached : MetadataReader::read(path);
         cover.loadForTrack(path, preferences.customCoverFor(path));
+        smart.markPlayed(path);
     };
 
     auto rebuildQueue = [&](const std::string& currentPath) {
@@ -1034,6 +1240,41 @@ int main() {
         queueSelected = to;
     };
 
+    auto saveCurrentSession = [&]() {
+        if (selectedSong.empty()) return;
+        SessionState state;
+        state.valid = true;
+        state.currentPath = selectedSong;
+        state.positionMs = player.positionMs();
+        state.currentIndex = playbackIndex;
+        state.paused = player.isPaused();
+        state.queue = playbackQueue;
+        if (state.queue.empty()) {
+            state.queue.push_back(selectedSong);
+            state.currentIndex = 0;
+        }
+        smart.saveSession(state);
+    };
+
+    const SessionState restoredSession = smart.loadSession();
+    if (restoredSession.valid) {
+        playbackQueue = restoredSession.queue;
+        if (playbackQueue.empty()) playbackQueue.push_back(restoredSession.currentPath);
+        queueOriginal = playbackQueue;
+        playbackIndex = restoredSession.currentIndex;
+        if (playbackIndex < 0 || playbackIndex >= static_cast<int>(playbackQueue.size())) {
+            auto it = std::find(playbackQueue.begin(), playbackQueue.end(), restoredSession.currentPath);
+            playbackIndex = it == playbackQueue.end() ? 0 : static_cast<int>(it - playbackQueue.begin());
+        }
+        selectedSong = restoredSession.currentPath;
+        const TrackMetadata* cached = library.findTrack(selectedSong);
+        metadata = cached ? *cached : MetadataReader::read(selectedSong);
+        cover.loadForTrack(selectedSong, preferences.customCoverFor(selectedSong));
+        // Restauramos en pausa para que abrir PengPlayer nunca empiece a sonar por sorpresa.
+        player.playFile(selectedSong, restoredSession.positionMs, true);
+    }
+
+    int sessionFrameCounter = 0;
     SceCtrlData pad{};
     unsigned int previousButtons = 0;
     bool running = true;
@@ -1046,17 +1287,21 @@ int main() {
         previousButtons = pad.buttons;
 
         if (screen == Screen::Library) {
-            const int count = tab == LibraryTab::Songs
-                ? static_cast<int>(sortedSongs(library).size())
-                : (tab == LibraryTab::Playlists
-                    ? static_cast<int>(playlists.playlists().size()) + 1
-                    : static_cast<int>(buildGroups(library, tab).size()));
+            int count = 0;
+            if (tab == LibraryTab::Songs) count = static_cast<int>(sortedSongs(library).size());
+            else if (tab == LibraryTab::Playlists) count = static_cast<int>(playlists.playlists().size()) + 1;
+            else if (tab == LibraryTab::Categories) count = static_cast<int>(smart.categories().size()) + 1;
+            else if (tab == LibraryTab::Favorites || tab == LibraryTab::Recent || tab == LibraryTab::MostPlayed)
+                count = static_cast<int>(tracksForSmartTab(library, smart, tab, searchQuery).size());
+            else if (tab == LibraryTab::Search) count = static_cast<int>(searchTracks(library, searchQuery).size()) + 1;
+            else count = static_cast<int>(buildGroups(library, tab).size());
+
             clampList(count, VISIBLE_ROWS, selected, scroll);
             if (pressed & SCE_CTRL_UP) moveList(-1, count, VISIBLE_ROWS, selected, scroll);
             if (pressed & SCE_CTRL_DOWN) moveList(1, count, VISIBLE_ROWS, selected, scroll);
 
             if (pressed & SCE_CTRL_TRIANGLE) {
-                tab = static_cast<LibraryTab>((static_cast<int>(tab) + 1) % 5);
+                tab = static_cast<LibraryTab>((static_cast<int>(tab) + 1) % kLibraryTabCount);
                 selected = 0;
                 scroll = 0;
             }
@@ -1065,6 +1310,19 @@ int main() {
                 if (tab == LibraryTab::Songs) {
                     const auto songs = sortedSongs(library);
                     if (selected >= 0 && selected < static_cast<int>(songs.size())) setQueue(songs, selected);
+                } else if (tab == LibraryTab::Favorites || tab == LibraryTab::Recent || tab == LibraryTab::MostPlayed) {
+                    const auto songs = tracksForSmartTab(library, smart, tab, searchQuery);
+                    if (selected >= 0 && selected < static_cast<int>(songs.size())) setQueue(songs, selected);
+                } else if (tab == LibraryTab::Search) {
+                    const auto songs = searchTracks(library, searchQuery);
+                    if (selected == 0) {
+                        const std::string query = TextInput::prompt("Buscar en la biblioteca", searchQuery, 64);
+                        if (!query.empty()) searchQuery = query;
+                        selected = 0;
+                        scroll = 0;
+                    } else if (selected - 1 < static_cast<int>(songs.size())) {
+                        setQueue(songs, selected - 1);
+                    }
                 } else if (tab == LibraryTab::Playlists) {
                     const int playlistCount = static_cast<int>(playlists.playlists().size());
                     if (selected == playlistCount) {
@@ -1080,6 +1338,21 @@ int main() {
                         playlistTracksScroll = 0;
                         playlistReturnScreen = Screen::Library;
                         screen = Screen::PlaylistTracks;
+                    }
+                } else if (tab == LibraryTab::Categories) {
+                    const int categoryCount = static_cast<int>(smart.categories().size());
+                    if (selected == categoryCount) {
+                        const std::string requestedName = TextInput::prompt("Nombre de la categoria", "", 48);
+                        if (!requestedName.empty()) {
+                            activeCategory = smart.createCategory(requestedName);
+                            selected = std::max(0, static_cast<int>(smart.categories().size()) - 1);
+                            scroll = std::max(0, selected - VISIBLE_ROWS + 1);
+                        }
+                    } else if (selected >= 0 && selected < categoryCount) {
+                        activeCategory = smart.categories()[selected].name;
+                        categoryTracksSelected = 0;
+                        categoryTracksScroll = 0;
+                        screen = Screen::CategoryTracks;
                     }
                 } else {
                     const auto groups = buildGroups(library, tab);
@@ -1102,6 +1375,19 @@ int main() {
                 confirmIndex = selected;
                 confirmYesSelected = false;
                 screen = Screen::ConfirmDelete;
+            } else if ((pressed & SCE_CTRL_SQUARE) && tab == LibraryTab::Categories &&
+                       selected >= 0 && selected < static_cast<int>(smart.categories().size())) {
+                confirmReturnScreen = Screen::Library;
+                confirmAction = ConfirmAction::DeleteCategory;
+                confirmItemName = smart.categories()[selected].name;
+                confirmIndex = selected;
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
+            } else if ((pressed & SCE_CTRL_SQUARE) && tab == LibraryTab::Search) {
+                const std::string query = TextInput::prompt("Buscar en la biblioteca", searchQuery, 64);
+                if (!query.empty()) searchQuery = query;
+                selected = 0;
+                scroll = 0;
             }
 
             if (pressed & SCE_CTRL_START) {
@@ -1147,7 +1433,10 @@ int main() {
                     screen = Screen::Roots;
                 } else if (settingsSelected == 2) {
                     appearanceHue = preferences.accentHue();
+                    appearanceScale = preferences.uiScalePercent();
+                    appearanceField = 0;
                     applyAccentHue(appearanceHue);
+                    UI_SCALE = appearanceScale / 100.0f;
                     screen = Screen::Appearance;
                 } else if (settingsSelected == 3) {
                     playlistsSelected = 0;
@@ -1159,23 +1448,37 @@ int main() {
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = settingsReturnScreen;
         } else if (screen == Screen::Appearance) {
-            bool changed = false;
-            if (pressed & SCE_CTRL_LEFT) { appearanceHue = normalizeHue(appearanceHue - 1); changed = true; }
-            if (pressed & SCE_CTRL_RIGHT) { appearanceHue = normalizeHue(appearanceHue + 1); changed = true; }
-            if (pressed & SCE_CTRL_LTRIGGER) { appearanceHue = normalizeHue(appearanceHue - 10); changed = true; }
-            if (pressed & SCE_CTRL_RTRIGGER) { appearanceHue = normalizeHue(appearanceHue + 10); changed = true; }
-            if (changed) applyAccentHue(appearanceHue);
+            if (pressed & SCE_CTRL_UP) appearanceField = 0;
+            if (pressed & SCE_CTRL_DOWN) appearanceField = 1;
+            if (appearanceField == 0) {
+                bool changed = false;
+                if (pressed & SCE_CTRL_LEFT) { appearanceHue = normalizeHue(appearanceHue - 1); changed = true; }
+                if (pressed & SCE_CTRL_RIGHT) { appearanceHue = normalizeHue(appearanceHue + 1); changed = true; }
+                if (pressed & SCE_CTRL_LTRIGGER) { appearanceHue = normalizeHue(appearanceHue - 10); changed = true; }
+                if (pressed & SCE_CTRL_RTRIGGER) { appearanceHue = normalizeHue(appearanceHue + 10); changed = true; }
+                if (changed) applyAccentHue(appearanceHue);
+            } else {
+                if (pressed & SCE_CTRL_LEFT) appearanceScale = std::max(80, appearanceScale - 5);
+                if (pressed & SCE_CTRL_RIGHT) appearanceScale = std::min(120, appearanceScale + 5);
+                if (pressed & SCE_CTRL_LTRIGGER) appearanceScale = std::max(80, appearanceScale - 10);
+                if (pressed & SCE_CTRL_RTRIGGER) appearanceScale = std::min(120, appearanceScale + 10);
+                UI_SCALE = appearanceScale / 100.0f;
+            }
             if (pressed & SCE_CTRL_CROSS) {
                 preferences.setAccentHue(appearanceHue);
+                preferences.setUiScalePercent(appearanceScale);
                 applyAccentHue(appearanceHue);
+                UI_SCALE = appearanceScale / 100.0f;
             }
             if (pressed & SCE_CTRL_CIRCLE) {
                 appearanceHue = preferences.accentHue();
+                appearanceScale = preferences.uiScalePercent();
                 applyAccentHue(appearanceHue);
+                UI_SCALE = appearanceScale / 100.0f;
                 screen = Screen::Settings;
             }
         } else if (screen == Screen::SongOptions) {
-            const int count = 4;
+            const int count = 6;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, songOptionsSelected);
             if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, songOptionsSelected);
             if (pressed & SCE_CTRL_CROSS) {
@@ -1193,6 +1496,11 @@ int main() {
                 } else if (songOptionsSelected == 3) {
                     addPlaylistSelected = 0;
                     screen = Screen::AddToPlaylist;
+                } else if (songOptionsSelected == 4 && !coverTargetSong.empty()) {
+                    smart.toggleFavorite(coverTargetSong);
+                } else if (songOptionsSelected == 5) {
+                    addCategorySelected = 0;
+                    screen = Screen::AddToCategory;
                 }
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::NowPlaying;
@@ -1292,6 +1600,62 @@ int main() {
                 screen = Screen::Settings;
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::PlaylistTracks;
+        } else if (screen == Screen::CategoryTracks) {
+            const SmartCategory* category = smart.findCategory(activeCategory);
+            const std::vector<const TrackMetadata*> songs = category ? tracksFromPaths(library, category->tracks) : std::vector<const TrackMetadata*>();
+            clampList(static_cast<int>(songs.size()), 10, categoryTracksSelected, categoryTracksScroll);
+            if (pressed & SCE_CTRL_UP) moveList(-1, static_cast<int>(songs.size()), 10, categoryTracksSelected, categoryTracksScroll);
+            if (pressed & SCE_CTRL_DOWN) moveList(1, static_cast<int>(songs.size()), 10, categoryTracksSelected, categoryTracksScroll);
+            if ((pressed & SCE_CTRL_CROSS) && categoryTracksSelected < static_cast<int>(songs.size())) setQueue(songs, categoryTracksSelected);
+            if ((pressed & SCE_CTRL_SQUARE) && category && categoryTracksSelected < static_cast<int>(category->tracks.size())) {
+                confirmReturnScreen = Screen::CategoryTracks;
+                confirmAction = ConfirmAction::RemoveCategoryTrack;
+                confirmIndex = categoryTracksSelected;
+                confirmItemName = categoryTracksSelected < static_cast<int>(songs.size()) ? songs[categoryTracksSelected]->title : "Cancion seleccionada";
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
+            }
+            if (pressed & SCE_CTRL_TRIANGLE) {
+                categoryAddSelected = 0;
+                categoryAddScroll = 0;
+                screen = Screen::CategoryAddSongs;
+            }
+            if (pressed & SCE_CTRL_START) {
+                settingsSelected = 0;
+                settingsReturnScreen = Screen::CategoryTracks;
+                screen = Screen::Settings;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
+        } else if (screen == Screen::CategoryAddSongs) {
+            const auto songs = sortedSongs(library);
+            const int count = static_cast<int>(songs.size());
+            clampList(count, 10, categoryAddSelected, categoryAddScroll);
+            if (pressed & SCE_CTRL_UP) moveList(-1, count, 10, categoryAddSelected, categoryAddScroll);
+            if (pressed & SCE_CTRL_DOWN) moveList(1, count, 10, categoryAddSelected, categoryAddScroll);
+            if ((pressed & SCE_CTRL_CROSS) && categoryAddSelected >= 0 && categoryAddSelected < count)
+                smart.addTrackToCategory(activeCategory, songs[categoryAddSelected]->path);
+            if (pressed & SCE_CTRL_START) {
+                settingsSelected = 0;
+                settingsReturnScreen = Screen::CategoryAddSongs;
+                screen = Screen::Settings;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::CategoryTracks;
+        } else if (screen == Screen::AddToCategory) {
+            const int count = static_cast<int>(smart.categories().size()) + 1;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, addCategorySelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, addCategorySelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                std::string target;
+                if (addCategorySelected == static_cast<int>(smart.categories().size())) {
+                    const std::string requestedName = TextInput::prompt("Nombre de la categoria", "", 48);
+                    if (!requestedName.empty()) target = smart.createCategory(requestedName);
+                } else if (addCategorySelected >= 0 && addCategorySelected < static_cast<int>(smart.categories().size())) {
+                    target = smart.categories()[addCategorySelected].name;
+                }
+                if (!target.empty() && !coverTargetSong.empty()) smart.addTrackToCategory(target, coverTargetSong);
+                screen = Screen::NowPlaying;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::SongOptions;
         } else if (screen == Screen::AddToPlaylist) {
             const int count = static_cast<int>(playlists.playlists().size()) + 1;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, addPlaylistSelected);
@@ -1363,6 +1727,15 @@ int main() {
                                 rootsSelected = static_cast<int>(library.roots().size()) - 1;
                             if (rootsSelected < 0) rootsSelected = 0;
                         }
+                    } else if (confirmAction == ConfirmAction::DeleteCategory) {
+                        smart.deleteCategory(confirmItemName);
+                        const int newCount = static_cast<int>(smart.categories().size()) + 1;
+                        if (selected >= newCount) selected = std::max(0, newCount - 1);
+                    } else if (confirmAction == ConfirmAction::RemoveCategoryTrack) {
+                        if (confirmIndex >= 0) {
+                            smart.removeTrackFromCategory(activeCategory, static_cast<std::size_t>(confirmIndex));
+                            if (categoryTracksSelected > 0) --categoryTracksSelected;
+                        }
                     }
                 }
 
@@ -1430,7 +1803,8 @@ int main() {
         // playlist entrabamos a Ahora suena y el mismo frame lo cerraba otra vez.
         const bool canOpenNowPlaying = screen == Screen::Library ||
             screen == Screen::GroupTracks || screen == Screen::Playlists ||
-            screen == Screen::PlaylistTracks || screen == Screen::PlaylistAddSongs;
+            screen == Screen::PlaylistTracks || screen == Screen::PlaylistAddSongs ||
+            screen == Screen::CategoryTracks || screen == Screen::CategoryAddSongs;
         if ((pressed & SCE_CTRL_SELECT) && !selectedSong.empty()) {
             if (screen == Screen::NowPlaying) {
                 screen = returnScreen;
@@ -1440,9 +1814,13 @@ int main() {
             }
         }
 
-        const bool playbackControls = screen == Screen::Library || screen == Screen::GroupTracks || screen == Screen::NowPlaying;
+        const bool playbackControls = screen == Screen::Library || screen == Screen::GroupTracks || screen == Screen::NowPlaying ||
+            screen == Screen::PlaylistTracks || screen == Screen::CategoryTracks;
         if (playbackControls) {
-            if ((pressed & SCE_CTRL_SQUARE) && screen != Screen::NowPlaying) player.togglePause();
+            const bool squareReserved = screen == Screen::Library &&
+                (tab == LibraryTab::Playlists || tab == LibraryTab::Categories || tab == LibraryTab::Search);
+            if ((pressed & SCE_CTRL_SQUARE) && screen != Screen::NowPlaying && !squareReserved &&
+                screen != Screen::PlaylistTracks && screen != Screen::CategoryTracks) player.togglePause();
             if (pressed & SCE_CTRL_LEFT) player.seekRelative(-5);
             if (pressed & SCE_CTRL_RIGHT) player.seekRelative(5);
             if (pressed & SCE_CTRL_LTRIGGER) playAdjacent(-1, true);
@@ -1455,7 +1833,7 @@ int main() {
         }
 
         if (screen == Screen::Library) {
-            drawLibrary(font, library, playlists, tab, selected, scroll, selectedSong, metadata, cover, player);
+            drawLibrary(font, library, playlists, smart, tab, selected, scroll, searchQuery, selectedSong, metadata, cover, player);
         } else if (screen == Screen::GroupTracks) {
             const auto songs = tracksForGroup(library, groupTab, groupKey);
             drawGroupTracks(font, groupLabel, songs, groupSelected, groupScroll, selectedSong, metadata, cover, player);
@@ -1467,11 +1845,15 @@ int main() {
             drawMenu(font, "Ajustes", "Biblioteca y personalizacion", items, settingsSelected,
                      "X: seleccionar  |  O: volver");
         } else if (screen == Screen::Appearance) {
-            drawAppearance(font, appearanceHue, preferences.accentHue());
+            drawAppearance(font, appearanceHue, preferences.accentHue(),
+                           appearanceScale, preferences.uiScalePercent(), appearanceField);
         } else if (screen == Screen::SongOptions) {
-            std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original", "Ver cola de reproduccion", "Anadir a playlist"};
+            std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original",
+                "Ver cola de reproduccion", "Anadir a playlist",
+                smart.isFavorite(coverTargetSong) ? "Quitar de favoritos" : "Anadir a favoritos",
+                "Anadir a categoria"};
             const std::string custom = preferences.customCoverFor(coverTargetSong);
-            const std::string subtitle = custom.empty() ? "Sin caratula personalizada" : "Personalizada: " + shorten(custom, 64);
+            const std::string subtitle = custom.empty() ? "Organiza y personaliza esta cancion" : "Caratula personalizada: " + shorten(custom, 55);
             drawMenu(font, "Opciones de cancion", subtitle, items, songOptionsSelected,
                      "X: seleccionar  |  O: volver");
         } else if (screen == Screen::Queue) {
@@ -1493,6 +1875,20 @@ int main() {
             items.push_back("+ Crear nueva playlist");
             drawMenu(font, "Anadir a playlist", shorten(metadata.title, 58), items, addPlaylistSelected,
                      "X: anadir  |  O: volver");
+        } else if (screen == Screen::CategoryTracks) {
+            const SmartCategory* category = smart.findCategory(activeCategory);
+            const std::vector<const TrackMetadata*> songs = category ? tracksFromPaths(library, category->tracks) : std::vector<const TrackMetadata*>();
+            drawCategoryTracks(font, activeCategory, songs, categoryTracksSelected, categoryTracksScroll,
+                               selectedSong, metadata, cover, player);
+        } else if (screen == Screen::CategoryAddSongs) {
+            drawCategoryAddSongs(font, library, smart, activeCategory, categoryAddSelected, categoryAddScroll,
+                                 selectedSong, metadata, cover, player);
+        } else if (screen == Screen::AddToCategory) {
+            std::vector<std::string> items;
+            for (const auto& category : smart.categories()) items.push_back(category.name);
+            items.push_back("+ Crear nueva categoria");
+            drawMenu(font, "Anadir a categoria", shorten(metadata.title, 58), items, addCategorySelected,
+                     "X: anadir  |  O: volver");
         } else if (screen == Screen::ConfirmDelete) {
             std::string detail = "No se eliminara ningun archivo de musica.";
             if (confirmAction == ConfirmAction::RemovePlaylistTrack)
@@ -1501,6 +1897,10 @@ int main() {
                 detail = "Solo se quitara esta ruta de PengPlayer. Tus archivos se conservan.";
             else if (confirmAction == ConfirmAction::DeletePlaylist)
                 detail = "Se eliminara la playlist, pero no sus archivos de musica.";
+            else if (confirmAction == ConfirmAction::DeleteCategory)
+                detail = "Se eliminara la categoria, pero no sus archivos de musica.";
+            else if (confirmAction == ConfirmAction::RemoveCategoryTrack)
+                detail = "Solo se quitara de esta categoria. El archivo se conserva.";
             drawConfirmDelete(font, confirmItemName, detail, confirmYesSelected);
         } else if (screen == Screen::Roots) {
             std::vector<std::string> items = library.roots();
@@ -1521,9 +1921,15 @@ int main() {
             drawImagePicker(font, *coverPicker);
         }
 
+        if (++sessionFrameCounter >= 300) {
+            saveCurrentSession();
+            sessionFrameCounter = 0;
+        }
+
         sceKernelDelayThread(16000);
     }
 
+    saveCurrentSession();
     player.stop();
     cover.clear();
     TextInput::shutdown();

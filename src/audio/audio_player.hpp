@@ -20,7 +20,7 @@ public:
     AudioPlayer();
     ~AudioPlayer();
 
-    bool playFile(const std::string& path);
+    bool playFile(const std::string& path, int startPositionMs = 0, bool startPaused = false);
     void stop();
     void togglePause();
     void seekRelative(int seconds);

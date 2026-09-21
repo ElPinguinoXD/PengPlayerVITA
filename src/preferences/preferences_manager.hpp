@@ -19,6 +19,9 @@ public:
     int repeatMode() const { return repeat_mode_; }
     void setRepeatMode(int mode);
 
+    int uiScalePercent() const { return ui_scale_percent_; }
+    void setUiScalePercent(int percent);
+
     std::string customCoverFor(const std::string& trackPath) const;
     bool setCustomCover(const std::string& trackPath, const std::string& imagePath);
     bool removeCustomCover(const std::string& trackPath);
@@ -34,5 +37,6 @@ private:
     int visualizer_mode_ = 0;
     bool shuffle_enabled_ = false;
     int repeat_mode_ = 0;
+    int ui_scale_percent_ = 100;
     std::map<std::string, std::string> custom_covers_;
 };

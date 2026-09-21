@@ -42,7 +42,7 @@ AudioPlayer::~AudioPlayer() {
     stop();
 }
 
-bool AudioPlayer::playFile(const std::string& path) {
+bool AudioPlayer::playFile(const std::string& path, int startPositionMs, bool startPaused) {
     stop();
 
     current_path_ = path;
@@ -53,8 +53,8 @@ bool AudioPlayer::playFile(const std::string& path) {
     channels_.store(0);
     for (auto& sample : visual_samples_) sample.store(0);
     stop_requested_.store(0);
-    pause_requested_.store(0);
-    seek_request_ms_.store(kNoSeekRequest);
+    pause_requested_.store(startPaused ? 1 : 0);
+    seek_request_ms_.store(startPositionMs > 0 ? startPositionMs : kNoSeekRequest);
     finished_event_.store(0);
     state_.store(static_cast<int>(State::Loading));
 
@@ -204,13 +204,13 @@ int AudioPlayer::run() {
 
     if (info.channels != 1 && info.channels != 2) {
         sf_close(file);
-        setError("0.3 admite por ahora audio mono o estereo.");
+        setError("PengPlayer admite por ahora audio mono o estereo.");
         return -1;
     }
 
     if (!isSupportedSampleRate(info.samplerate)) {
         sf_close(file);
-        setError("Frecuencia no compatible aun. 0.3 admite hasta 48 kHz.");
+        setError("Frecuencia no compatible aun. PengPlayer admite por ahora hasta 48 kHz.");
         return -1;
     }
 
@@ -250,7 +250,7 @@ int AudioPlayer::run() {
     }
 
     sf_count_t currentFrame = 0;
-    state_.store(static_cast<int>(State::Playing));
+    state_.store(static_cast<int>(pause_requested_.load() ? State::Paused : State::Playing));
 
     while (!stop_requested_.load()) {
         const int seekMs = seek_request_ms_.exchange(kNoSeekRequest);

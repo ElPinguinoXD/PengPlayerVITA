@@ -51,6 +51,13 @@ void PreferencesManager::setRepeatMode(int mode) {
     saveSettings();
 }
 
+void PreferencesManager::setUiScalePercent(int percent) {
+    if (percent < 80) percent = 80;
+    if (percent > 120) percent = 120;
+    ui_scale_percent_ = percent;
+    saveSettings();
+}
+
 std::string PreferencesManager::customCoverFor(const std::string& trackPath) const {
     const auto it = custom_covers_.find(trackPath);
     return it == custom_covers_.end() ? std::string() : it->second;
@@ -83,6 +90,7 @@ void PreferencesManager::loadSettings() {
     visualizer_mode_ = 0;
     shuffle_enabled_ = false;
     repeat_mode_ = 0;
+    ui_scale_percent_ = 100;
 
     std::FILE* file = std::fopen(kSettingsPath, "rb");
     if (!file) return;
@@ -95,6 +103,7 @@ void PreferencesManager::loadSettings() {
         const std::string visualizerPrefix = "visualizer_mode=";
         const std::string shufflePrefix = "shuffle=";
         const std::string repeatPrefix = "repeat_mode=";
+        const std::string uiScalePrefix = "ui_scale=";
         if (value.compare(0, huePrefix.size(), huePrefix) == 0) {
             accent_hue_ = std::atoi(value.substr(huePrefix.size()).c_str());
             accent_hue_ %= 360;
@@ -110,6 +119,10 @@ void PreferencesManager::loadSettings() {
         } else if (value.compare(0, repeatPrefix.size(), repeatPrefix) == 0) {
             repeat_mode_ = std::atoi(value.substr(repeatPrefix.size()).c_str());
             if (repeat_mode_ < 0 || repeat_mode_ > 2) repeat_mode_ = 0;
+        } else if (value.compare(0, uiScalePrefix.size(), uiScalePrefix) == 0) {
+            ui_scale_percent_ = std::atoi(value.substr(uiScalePrefix.size()).c_str());
+            if (ui_scale_percent_ < 80) ui_scale_percent_ = 80;
+            if (ui_scale_percent_ > 120) ui_scale_percent_ = 120;
         }
     }
     std::fclose(file);
@@ -130,6 +143,7 @@ void PreferencesManager::saveSettings() const {
     std::fprintf(file, "visualizer_mode=%d\n", visualizer_mode_);
     std::fprintf(file, "shuffle=%d\n", shuffle_enabled_ ? 1 : 0);
     std::fprintf(file, "repeat_mode=%d\n", repeat_mode_);
+    std::fprintf(file, "ui_scale=%d\n", ui_scale_percent_);
     std::fclose(file);
 }
 
