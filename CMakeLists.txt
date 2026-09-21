@@ -13,7 +13,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "PengPlayer")
 set(VITA_TITLEID "PENGPLR01")
-set(VITA_VERSION "00.60")
+set(VITA_VERSION "00.70")
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +29,8 @@ add_executable(${PROJECT_NAME}
     src/library/library_manager.cpp
     src/preferences/preferences_manager.cpp
     src/visualizer/audio_visualizer.cpp
+    src/playlists/playlist_manager.cpp
+    src/ui/text_input.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)
@@ -61,6 +63,8 @@ target_link_libraries(${PROJECT_NAME}
     SceIofilemgr_stub
     SceAppMgr_stub
     SceCommonDialog_stub
+    SceIme_stub
+    SceAppUtil_stub
     SceAudio_stub
 )
 

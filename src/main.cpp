@@ -20,6 +20,8 @@
 #include "library/library_manager.hpp"
 #include "preferences/preferences_manager.hpp"
 #include "visualizer/audio_visualizer.hpp"
+#include "playlists/playlist_manager.hpp"
+#include "ui/text_input.hpp"
 
 namespace {
 constexpr int SCREEN_W = 960;
@@ -174,14 +176,28 @@ enum class Screen {
     Mounts,
     FolderPicker,
     CoverMounts,
-    CoverPicker
+    CoverPicker,
+    Queue,
+    Playlists,
+    PlaylistTracks,
+    PlaylistAddSongs,
+    AddToPlaylist,
+    ConfirmDelete
+};
+
+enum class ConfirmAction {
+    None,
+    DeletePlaylist,
+    RemovePlaylistTrack,
+    RemoveMusicRoot
 };
 
 enum class LibraryTab {
     Songs = 0,
     Artists = 1,
     Albums = 2,
-    Folders = 3
+    Folders = 3,
+    Playlists = 4
 };
 
 
@@ -246,6 +262,21 @@ std::vector<const TrackMetadata*> tracksForGroup(const LibraryManager& library, 
         return a->path < b->path;
     });
     return result;
+}
+
+std::vector<const TrackMetadata*> tracksFromPaths(const LibraryManager& library, const std::vector<std::string>& paths) {
+    std::vector<const TrackMetadata*> result;
+    for (const auto& path : paths) {
+        const TrackMetadata* track = library.findTrack(path);
+        if (track) result.push_back(track);
+    }
+    return result;
+}
+
+const char* repeatModeName(int mode) {
+    if (mode == 1) return "Todo";
+    if (mode == 2) return "Una";
+    return "Off";
 }
 
 void clampList(int count, int visibleRows, int& selected, int& scroll) {
@@ -318,23 +349,23 @@ void drawHeader(vita2d_pgf* font, const std::string& title, const std::string& s
     vita2d_draw_rectangle(0, 0, SCREEN_W, 72, PANEL);
     drawText(font, 28, 39, 1.18f, TEXT, title);
     drawText(font, 28, 62, 0.62f, MUTED, subtitle);
-    drawText(font, 834, 39, 0.65f, ACCENT, "v0.6");
+    drawText(font, 834, 39, 0.65f, ACCENT, "v0.7");
 }
 
-void drawLibrary(vita2d_pgf* font, const LibraryManager& library, LibraryTab tab,
+void drawLibrary(vita2d_pgf* font, const LibraryManager& library, const PlaylistManager& playlists, LibraryTab tab,
                  int selected, int scroll, const std::string& selectedSong,
                  const TrackMetadata& metadata, const CoverArt& cover, const AudioPlayer& player) {
     vita2d_start_drawing();
     vita2d_clear_screen();
     drawHeader(font, "PengPlayer", "Biblioteca  |  △ cambiar seccion  |  START ajustes");
 
-    const char* tabs[4] = {"Canciones", "Artistas", "Albumes", "Carpetas"};
-    for (int i = 0; i < 4; ++i) {
-        const int x = 20 + i * 230;
+    const char* tabs[5] = {"Canciones", "Artistas", "Albumes", "Carpetas", "Playlists"};
+    for (int i = 0; i < 5; ++i) {
+        const int x = 20 + i * 184;
         const bool active = static_cast<int>(tab) == i;
-        vita2d_draw_rectangle(x, 82, 218, 31, active ? ACCENT_SOFT : PANEL_2);
-        if (active) vita2d_draw_rectangle(x, 110, 218, 3, ACCENT);
-        drawText(font, x + 14, 104, 0.66f, active ? TEXT : MUTED, tabs[i]);
+        vita2d_draw_rectangle(x, 82, 174, 31, active ? ACCENT_SOFT : PANEL_2);
+        if (active) vita2d_draw_rectangle(x, 110, 174, 3, ACCENT);
+        drawText(font, x + 10, 104, 0.60f, active ? TEXT : MUTED, tabs[i]);
     }
 
     if (library.isScanning()) {
@@ -362,6 +393,26 @@ void drawLibrary(vita2d_pgf* font, const LibraryManager& library, LibraryTab tab
             std::string detail = songs[i]->artist;
             if (!songs[i]->album.empty() && songs[i]->album != "Album desconocido") detail += "  •  " + songs[i]->album;
             drawText(font, 520, y + 17, 0.54f, MUTED, shorten(detail, 47));
+        }
+    } else if (tab == LibraryTab::Playlists) {
+        const int playlistCount = static_cast<int>(playlists.playlists().size());
+        const int total = playlistCount + 1;
+        const int end = std::min(scroll + VISIBLE_ROWS, total);
+        for (int i = scroll; i < end; ++i) {
+            const int y = listTop + (i - scroll) * ROW_H;
+            if (i == selected) {
+                vita2d_draw_rectangle(20, y - 2, 920, ROW_H - 2, ACCENT_SOFT);
+                vita2d_draw_rectangle(20, y - 2, 5, ROW_H - 2, ACCENT);
+            }
+            if (i == playlistCount) {
+                drawText(font, 38, y + 17, 0.71f, ACCENT, "+ Crear nueva playlist");
+                drawText(font, 720, y + 17, 0.52f, MUTED, "X para crear");
+            } else {
+                const Playlist& playlist = playlists.playlists()[i];
+                drawText(font, 38, y + 17, 0.71f, TEXT, shorten(playlist.name, 58));
+                drawText(font, 790, y + 17, 0.54f, MUTED,
+                         std::to_string(playlist.tracks.size()) + (playlist.tracks.size() == 1 ? " cancion" : " canciones"));
+            }
         }
     } else {
         const auto groups = buildGroups(library, tab);
@@ -413,6 +464,68 @@ void drawGroupTracks(vita2d_pgf* font, const std::string& groupLabel,
     vita2d_swap_buffers();
 }
 
+void drawPlaylistTracks(vita2d_pgf* font, const std::string& playlistName,
+                        const std::vector<const TrackMetadata*>& songs, int selected, int scroll,
+                        const std::string& selectedSong, const TrackMetadata& metadata,
+                        const CoverArt& cover, const AudioPlayer& player) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, shorten(playlistName, 42),
+               "X reproducir  |  △ anadir canciones  |  SELECT ahora suena  |  START ajustes");
+
+    const int listTop = 92;
+    const int visible = 10;
+    const int end = std::min(scroll + visible, static_cast<int>(songs.size()));
+    if (songs.empty()) {
+        drawText(font, 30, 145, 0.72f, MUTED, "Esta playlist esta vacia. Pulsa △ para anadir canciones.");
+    }
+    for (int i = scroll; i < end; ++i) {
+        const int y = listTop + (i - scroll) * 36;
+        if (i == selected) {
+            vita2d_draw_rectangle(20, y - 2, 920, 34, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 34, ACCENT);
+        }
+        drawText(font, 38, y + 18, 0.72f, TEXT, shorten(songs[i]->title, 56));
+        drawText(font, 590, y + 18, 0.53f, MUTED, shorten(songs[i]->artist, 28));
+    }
+    drawMiniPlayer(font, selectedSong, metadata, cover, player);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawPlaylistAddSongs(vita2d_pgf* font, const LibraryManager& library, const PlaylistManager& playlists,
+                          const std::string& playlistName, int selected, int scroll,
+                          const std::string& selectedSong, const TrackMetadata& metadata,
+                          const CoverArt& cover, const AudioPlayer& player) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Anadir canciones", shorten(playlistName, 44) + "  |  X anadir  |  O volver");
+
+    const auto songs = sortedSongs(library);
+    const Playlist* playlist = playlists.find(playlistName);
+    const int listTop = 92;
+    const int visible = 10;
+    const int end = std::min(scroll + visible, static_cast<int>(songs.size()));
+    if (songs.empty()) drawText(font, 30, 145, 0.72f, MUTED, "La biblioteca esta vacia.");
+
+    for (int i = scroll; i < end; ++i) {
+        const int y = listTop + (i - scroll) * 36;
+        if (i == selected) {
+            vita2d_draw_rectangle(20, y - 2, 920, 34, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 34, ACCENT);
+        }
+        const bool alreadyAdded = playlist &&
+            std::find(playlist->tracks.begin(), playlist->tracks.end(), songs[i]->path) != playlist->tracks.end();
+        drawText(font, 38, y + 18, 0.60f, alreadyAdded ? ACCENT : MUTED, alreadyAdded ? "[OK]" : "[ +]");
+        drawText(font, 96, y + 18, 0.70f, TEXT, shorten(songs[i]->title, 49));
+        drawText(font, 615, y + 18, 0.52f, MUTED, shorten(songs[i]->artist, 25));
+    }
+
+    drawMiniPlayer(font, selectedSong, metadata, cover, player);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
 const char* visualizerName(int mode) {
     switch (mode) {
         case 1: return "Espectro";
@@ -424,7 +537,8 @@ const char* visualizerName(int mode) {
     }
 }
 
-void drawNowPlayingCommon(vita2d_pgf* font, const AudioPlayer& player, int visualizerMode) {
+void drawNowPlayingCommon(vita2d_pgf* font, const AudioPlayer& player, int visualizerMode,
+                          bool shuffleEnabled, int repeatMode) {
     drawProgressBar(player, 46, 476, 868, 7);
     drawText(font, 46, 505, 0.61f, MUTED, formatTime(player.positionMs()));
     drawText(font, 871, 505, 0.61f, MUTED, formatTime(player.durationMs()));
@@ -432,10 +546,13 @@ void drawNowPlayingCommon(vita2d_pgf* font, const AudioPlayer& player, int visua
     const std::string state = player.isPaused() ? "PAUSADO" :
         (player.isPlaying() ? "REPRODUCIENDO" : player.stateLabel());
     drawText(font, 46, 464, 0.54f, ACCENT, state);
-    drawText(font, 680, 464, 0.54f, MUTED, std::string("Vista: ") + visualizerName(visualizerMode));
+    std::string modes = std::string("Vista: ") + visualizerName(visualizerMode) +
+        "  |  Aleatorio: " + (shuffleEnabled ? "ON" : "OFF") +
+        "  |  Repetir: " + repeatModeName(repeatMode);
+    drawText(font, 540, 464, 0.49f, MUTED, shorten(modes, 60));
 
-    drawText(font, 56, 531, 0.53f, MUTED,
-             "↑/↓ visualizador   X pausa   ←/→ -5/+5s   L/R anterior/siguiente   △ opciones");
+    drawText(font, 56, 531, 0.50f, MUTED,
+             "↑/↓ visualizador   X pausa   □ aleatorio   START repetir   △ opciones");
 }
 
 void drawSpectrumBars(const AudioVisualizer& visualizer, float x, float y, float w, float h,
@@ -496,7 +613,8 @@ void drawCircularVisualizer(const AudioVisualizer& visualizer, float cx, float c
 
 void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
                     const CoverArt& cover, const AudioPlayer& player,
-                    const AudioVisualizer& visualizer, int visualizerMode) {
+                    const AudioVisualizer& visualizer, int visualizerMode,
+                    bool shuffleEnabled, int repeatMode) {
     vita2d_start_drawing();
     vita2d_clear_screen();
     drawHeader(font, "Ahora suena", "↑/↓: cambiar visualizador  |  O: volver  |  △: opciones");
@@ -575,7 +693,7 @@ void drawNowPlaying(vita2d_pgf* font, const TrackMetadata& metadata,
         drawText(font, 64, 407, 0.58f, MUTED, shorten(metadata.album, 31));
     }
 
-    drawNowPlayingCommon(font, player, visualizerMode);
+    drawNowPlayingCommon(font, player, visualizerMode, shuffleEnabled, repeatMode);
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -594,6 +712,68 @@ void drawMenu(vita2d_pgf* font, const std::string& title, const std::string& sub
         drawText(font, 48, y, 0.78f, TEXT, shorten(items[i], 82));
     }
     drawText(font, 28, 518, 0.57f, MUTED, footer);
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawConfirmDelete(vita2d_pgf* font, const std::string& itemName,
+                       const std::string& detail, bool yesSelected) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Confirmar eliminacion", "Esta accion requiere confirmacion");
+
+    const int boxX = 125;
+    const int boxY = 145;
+    const int boxW = 710;
+    const int boxH = 245;
+    vita2d_draw_rectangle(boxX, boxY, boxW, boxH, PANEL);
+    vita2d_draw_rectangle(boxX, boxY, boxW, 5, ACCENT);
+
+    drawText(font, 165, 205, 0.82f, TEXT, "¿Seguro que quieres eliminar?");
+    drawText(font, 165, 244, 0.72f, ACCENT, shorten(itemName, 63));
+    drawText(font, 165, 285, 0.58f, MUTED, detail);
+
+    const int noX = 215;
+    const int yesX = 525;
+    const int buttonY = 326;
+    const int buttonW = 220;
+    const int buttonH = 46;
+
+    vita2d_draw_rectangle(noX, buttonY, buttonW, buttonH, yesSelected ? PANEL_2 : ACCENT_SOFT);
+    vita2d_draw_rectangle(yesX, buttonY, buttonW, buttonH, yesSelected ? ACCENT_SOFT : PANEL_2);
+    if (!yesSelected) vita2d_draw_rectangle(noX, buttonY, 5, buttonH, ACCENT);
+    if (yesSelected) vita2d_draw_rectangle(yesX, buttonY, 5, buttonH, ACCENT);
+
+    drawText(font, noX + 77, buttonY + 31, 0.72f, TEXT, "No");
+    drawText(font, yesX + 52, buttonY + 31, 0.72f, TEXT, "Si, eliminar");
+    drawText(font, 254, 430, 0.58f, MUTED, "Izquierda/Derecha: elegir   X: confirmar   O: cancelar");
+
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+void drawQueue(vita2d_pgf* font, const LibraryManager& library,
+               const std::vector<std::string>& queue, int currentIndex,
+               int selected, int scroll) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    drawHeader(font, "Cola de reproduccion", "X reproducir  |  □ eliminar  |  L/R mover  |  O volver");
+    const int visible = 11;
+    const int end = std::min(scroll + visible, static_cast<int>(queue.size()));
+    if (queue.empty()) drawText(font, 32, 132, 0.72f, MUTED, "La cola esta vacia.");
+    for (int i = scroll; i < end; ++i) {
+        const int y = 92 + (i - scroll) * 36;
+        if (i == selected) {
+            vita2d_draw_rectangle(20, y - 2, 920, 34, ACCENT_SOFT);
+            vita2d_draw_rectangle(20, y - 2, 5, 34, ACCENT);
+        }
+        const TrackMetadata* track = library.findTrack(queue[i]);
+        const std::string title = track ? track->title : filenameFromPath(queue[i]);
+        const std::string artist = track ? track->artist : "";
+        drawText(font, 38, y + 18, 0.69f, i == currentIndex ? ACCENT : TEXT,
+                 std::string(i == currentIndex ? "> " : "  ") + shorten(title, 55));
+        drawText(font, 620, y + 18, 0.52f, MUTED, shorten(artist, 28));
+    }
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -714,6 +894,7 @@ int main() {
     vita2d_set_clear_color(BG);
     vita2d_pgf* font = vita2d_load_default_pgf();
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+    TextInput::initialize();
 
     LibraryManager library;
     library.initialize();
@@ -722,15 +903,27 @@ int main() {
     preferences.initialize();
     applyAccentHue(preferences.accentHue());
 
+    PlaylistManager playlists;
+    playlists.initialize();
+
     AudioPlayer player;
     TrackMetadata metadata;
     CoverArt cover;
     AudioVisualizer visualizer;
     int visualizerMode = preferences.visualizerMode();
+    bool shuffleEnabled = preferences.shuffleEnabled();
+    int repeatMode = preferences.repeatMode();
     std::string selectedSong;
 
     Screen screen = Screen::Library;
     Screen returnScreen = Screen::Library;
+    Screen settingsReturnScreen = Screen::Library;
+    Screen playlistReturnScreen = Screen::Playlists;
+    Screen confirmReturnScreen = Screen::Library;
+    ConfirmAction confirmAction = ConfirmAction::None;
+    std::string confirmItemName;
+    int confirmIndex = -1;
+    bool confirmYesSelected = false;
     LibraryTab tab = LibraryTab::Songs;
     LibraryTab groupTab = LibraryTab::Artists;
     std::string groupKey;
@@ -747,11 +940,22 @@ int main() {
     int rootsSelected = 0;
     int mountsSelected = 0;
     int coverMountsSelected = 0;
+    int queueSelected = 0;
+    int queueScroll = 0;
+    int playlistsSelected = 0;
+    int playlistTracksSelected = 0;
+    int playlistTracksScroll = 0;
+    int playlistAddSelected = 0;
+    int playlistAddScroll = 0;
+    int addPlaylistSelected = 0;
+    std::string activePlaylist;
 
     std::unique_ptr<MusicBrowser> folderPicker;
     std::unique_ptr<ImageBrowser> coverPicker;
+    std::vector<std::string> queueOriginal;
     std::vector<std::string> playbackQueue;
     int playbackIndex = -1;
+    unsigned int shuffleState = 0xC0FFEEu;
 
     auto startTrack = [&](const std::string& path) {
         if (!player.playFile(path)) return;
@@ -761,11 +965,32 @@ int main() {
         cover.loadForTrack(path, preferences.customCoverFor(path));
     };
 
+    auto rebuildQueue = [&](const std::string& currentPath) {
+        playbackQueue = queueOriginal;
+        if (shuffleEnabled && playbackQueue.size() > 1) {
+            auto it = std::find(playbackQueue.begin(), playbackQueue.end(), currentPath);
+            if (it != playbackQueue.end()) playbackQueue.erase(it);
+            for (int i = static_cast<int>(playbackQueue.size()) - 1; i > 0; --i) {
+                shuffleState = shuffleState * 1664525u + 1013904223u;
+                const int j = static_cast<int>(shuffleState % static_cast<unsigned int>(i + 1));
+                std::swap(playbackQueue[i], playbackQueue[j]);
+            }
+            if (!currentPath.empty()) playbackQueue.insert(playbackQueue.begin(), currentPath);
+        }
+        playbackIndex = -1;
+        if (!currentPath.empty()) {
+            auto it = std::find(playbackQueue.begin(), playbackQueue.end(), currentPath);
+            if (it != playbackQueue.end()) playbackIndex = static_cast<int>(it - playbackQueue.begin());
+        }
+    };
+
     auto setQueue = [&](const std::vector<const TrackMetadata*>& tracks, int index) {
-        playbackQueue.clear();
-        for (const auto* track : tracks) playbackQueue.push_back(track->path);
-        playbackIndex = index;
-        if (index >= 0 && index < static_cast<int>(playbackQueue.size())) startTrack(playbackQueue[index]);
+        queueOriginal.clear();
+        for (const auto* track : tracks) queueOriginal.push_back(track->path);
+        std::string initial;
+        if (index >= 0 && index < static_cast<int>(queueOriginal.size())) initial = queueOriginal[index];
+        rebuildQueue(initial);
+        if (playbackIndex >= 0) startTrack(playbackQueue[playbackIndex]);
     };
 
     auto playQueueIndex = [&](int index) -> bool {
@@ -788,6 +1013,27 @@ int main() {
         return playQueueIndex(next);
     };
 
+    auto toggleShuffle = [&]() {
+        const std::string current = selectedSong;
+        shuffleEnabled = !shuffleEnabled;
+        preferences.setShuffleEnabled(shuffleEnabled);
+        rebuildQueue(current);
+    };
+
+    auto cycleRepeat = [&]() {
+        repeatMode = (repeatMode + 1) % 3;
+        preferences.setRepeatMode(repeatMode);
+    };
+
+    auto queueMove = [&](int from, int to) {
+        if (from < 0 || to < 0 || from >= static_cast<int>(playbackQueue.size()) ||
+            to >= static_cast<int>(playbackQueue.size()) || from == to) return;
+        std::swap(playbackQueue[from], playbackQueue[to]);
+        if (playbackIndex == from) playbackIndex = to;
+        else if (playbackIndex == to) playbackIndex = from;
+        queueSelected = to;
+    };
+
     SceCtrlData pad{};
     unsigned int previousButtons = 0;
     bool running = true;
@@ -802,13 +1048,15 @@ int main() {
         if (screen == Screen::Library) {
             const int count = tab == LibraryTab::Songs
                 ? static_cast<int>(sortedSongs(library).size())
-                : static_cast<int>(buildGroups(library, tab).size());
+                : (tab == LibraryTab::Playlists
+                    ? static_cast<int>(playlists.playlists().size()) + 1
+                    : static_cast<int>(buildGroups(library, tab).size()));
             clampList(count, VISIBLE_ROWS, selected, scroll);
             if (pressed & SCE_CTRL_UP) moveList(-1, count, VISIBLE_ROWS, selected, scroll);
             if (pressed & SCE_CTRL_DOWN) moveList(1, count, VISIBLE_ROWS, selected, scroll);
 
             if (pressed & SCE_CTRL_TRIANGLE) {
-                tab = static_cast<LibraryTab>((static_cast<int>(tab) + 1) % 4);
+                tab = static_cast<LibraryTab>((static_cast<int>(tab) + 1) % 5);
                 selected = 0;
                 scroll = 0;
             }
@@ -817,6 +1065,22 @@ int main() {
                 if (tab == LibraryTab::Songs) {
                     const auto songs = sortedSongs(library);
                     if (selected >= 0 && selected < static_cast<int>(songs.size())) setQueue(songs, selected);
+                } else if (tab == LibraryTab::Playlists) {
+                    const int playlistCount = static_cast<int>(playlists.playlists().size());
+                    if (selected == playlistCount) {
+                        const std::string requestedName = TextInput::prompt("Nombre de la playlist", "", 48);
+                        if (!requestedName.empty()) {
+                            activePlaylist = playlists.createPlaylist(requestedName);
+                            selected = std::max(0, static_cast<int>(playlists.playlists().size()) - 1);
+                            scroll = std::max(0, selected - VISIBLE_ROWS + 1);
+                        }
+                    } else if (selected >= 0 && selected < playlistCount) {
+                        activePlaylist = playlists.playlists()[selected].name;
+                        playlistTracksSelected = 0;
+                        playlistTracksScroll = 0;
+                        playlistReturnScreen = Screen::Library;
+                        screen = Screen::PlaylistTracks;
+                    }
                 } else {
                     const auto groups = buildGroups(library, tab);
                     if (selected >= 0 && selected < static_cast<int>(groups.size())) {
@@ -830,8 +1094,19 @@ int main() {
                 }
             }
 
+            if ((pressed & SCE_CTRL_SQUARE) && tab == LibraryTab::Playlists &&
+                selected >= 0 && selected < static_cast<int>(playlists.playlists().size())) {
+                confirmReturnScreen = Screen::Library;
+                confirmAction = ConfirmAction::DeletePlaylist;
+                confirmItemName = playlists.playlists()[selected].name;
+                confirmIndex = selected;
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
+            }
+
             if (pressed & SCE_CTRL_START) {
                 settingsSelected = 0;
+                settingsReturnScreen = Screen::Library;
                 screen = Screen::Settings;
             }
         } else if (screen == Screen::GroupTracks) {
@@ -843,6 +1118,8 @@ int main() {
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
         } else if (screen == Screen::NowPlaying) {
             if (pressed & SCE_CTRL_CROSS) player.togglePause();
+            if (pressed & SCE_CTRL_SQUARE) toggleShuffle();
+            if (pressed & SCE_CTRL_START) cycleRepeat();
             if (pressed & SCE_CTRL_UP) {
                 visualizerMode = (visualizerMode + 4) % 5;
                 preferences.setVisualizerMode(visualizerMode);
@@ -858,15 +1135,13 @@ int main() {
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = returnScreen;
         } else if (screen == Screen::Settings) {
-            const int count = 4;
+            const int count = 5;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, settingsSelected);
             if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, settingsSelected);
             if (pressed & SCE_CTRL_CROSS) {
                 if (settingsSelected == 0) {
                     library.startScan();
-                    screen = Screen::Library;
-                    selected = 0;
-                    scroll = 0;
+                    screen = settingsReturnScreen;
                 } else if (settingsSelected == 1) {
                     rootsSelected = 0;
                     screen = Screen::Roots;
@@ -874,11 +1149,15 @@ int main() {
                     appearanceHue = preferences.accentHue();
                     applyAccentHue(appearanceHue);
                     screen = Screen::Appearance;
+                } else if (settingsSelected == 3) {
+                    playlistsSelected = 0;
+                    playlistReturnScreen = Screen::Playlists;
+                    screen = Screen::Playlists;
                 } else {
                     running = false;
                 }
             }
-            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Library;
+            if (pressed & SCE_CTRL_CIRCLE) screen = settingsReturnScreen;
         } else if (screen == Screen::Appearance) {
             bool changed = false;
             if (pressed & SCE_CTRL_LEFT) { appearanceHue = normalizeHue(appearanceHue - 1); changed = true; }
@@ -896,20 +1175,139 @@ int main() {
                 screen = Screen::Settings;
             }
         } else if (screen == Screen::SongOptions) {
-            const int count = 2;
+            const int count = 4;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, songOptionsSelected);
             if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, songOptionsSelected);
             if (pressed & SCE_CTRL_CROSS) {
                 if (songOptionsSelected == 0) {
                     coverMountsSelected = 0;
                     screen = Screen::CoverMounts;
-                } else if (!coverTargetSong.empty()) {
+                } else if (songOptionsSelected == 1 && !coverTargetSong.empty()) {
                     preferences.removeCustomCover(coverTargetSong);
                     if (coverTargetSong == selectedSong) cover.loadForTrack(selectedSong);
                     screen = Screen::NowPlaying;
+                } else if (songOptionsSelected == 2) {
+                    queueSelected = playbackIndex >= 0 ? playbackIndex : 0;
+                    queueScroll = 0;
+                    screen = Screen::Queue;
+                } else if (songOptionsSelected == 3) {
+                    addPlaylistSelected = 0;
+                    screen = Screen::AddToPlaylist;
                 }
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::NowPlaying;
+        } else if (screen == Screen::Queue) {
+            const int count = static_cast<int>(playbackQueue.size());
+            clampList(count, 11, queueSelected, queueScroll);
+            if (pressed & SCE_CTRL_UP) moveList(-1, count, 11, queueSelected, queueScroll);
+            if (pressed & SCE_CTRL_DOWN) moveList(1, count, 11, queueSelected, queueScroll);
+            if ((pressed & SCE_CTRL_CROSS) && queueSelected >= 0 && queueSelected < count) playQueueIndex(queueSelected);
+            if ((pressed & SCE_CTRL_SQUARE) && queueSelected >= 0 && queueSelected < count && queueSelected != playbackIndex) {
+                const std::string removed = playbackQueue[queueSelected];
+                playbackQueue.erase(playbackQueue.begin() + queueSelected);
+                auto oit = std::find(queueOriginal.begin(), queueOriginal.end(), removed);
+                if (oit != queueOriginal.end()) queueOriginal.erase(oit);
+                if (queueSelected < playbackIndex) --playbackIndex;
+                if (queueSelected >= static_cast<int>(playbackQueue.size())) queueSelected = static_cast<int>(playbackQueue.size()) - 1;
+                if (queueSelected < 0) queueSelected = 0;
+            }
+            if (pressed & SCE_CTRL_LTRIGGER) queueMove(queueSelected, queueSelected - 1);
+            if (pressed & SCE_CTRL_RTRIGGER) queueMove(queueSelected, queueSelected + 1);
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::NowPlaying;
+        } else if (screen == Screen::Playlists) {
+            const int count = static_cast<int>(playlists.playlists().size()) + 1;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, playlistsSelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, playlistsSelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                if (playlistsSelected == static_cast<int>(playlists.playlists().size())) {
+                    const std::string requestedName = TextInput::prompt("Nombre de la playlist", "", 48);
+                    if (!requestedName.empty()) {
+                        activePlaylist = playlists.createPlaylist(requestedName);
+                        playlistsSelected = static_cast<int>(playlists.playlists().size()) - 1;
+                    }
+                } else if (playlistsSelected >= 0 && playlistsSelected < static_cast<int>(playlists.playlists().size())) {
+                    activePlaylist = playlists.playlists()[playlistsSelected].name;
+                    playlistTracksSelected = 0;
+                    playlistTracksScroll = 0;
+                    playlistReturnScreen = Screen::Playlists;
+                    screen = Screen::PlaylistTracks;
+                }
+            }
+            if ((pressed & SCE_CTRL_SQUARE) && playlistsSelected >= 0 && playlistsSelected < static_cast<int>(playlists.playlists().size())) {
+                confirmReturnScreen = Screen::Playlists;
+                confirmAction = ConfirmAction::DeletePlaylist;
+                confirmItemName = playlists.playlists()[playlistsSelected].name;
+                confirmIndex = playlistsSelected;
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
+            }
+            if (pressed & SCE_CTRL_START) {
+                settingsSelected = 0;
+                settingsReturnScreen = Screen::Playlists;
+                screen = Screen::Settings;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Settings;
+        } else if (screen == Screen::PlaylistTracks) {
+            const Playlist* playlist = playlists.find(activePlaylist);
+            const std::vector<const TrackMetadata*> songs = playlist ? tracksFromPaths(library, playlist->tracks) : std::vector<const TrackMetadata*>();
+            clampList(static_cast<int>(songs.size()), 10, playlistTracksSelected, playlistTracksScroll);
+            if (pressed & SCE_CTRL_UP) moveList(-1, static_cast<int>(songs.size()), 10, playlistTracksSelected, playlistTracksScroll);
+            if (pressed & SCE_CTRL_DOWN) moveList(1, static_cast<int>(songs.size()), 10, playlistTracksSelected, playlistTracksScroll);
+            if ((pressed & SCE_CTRL_CROSS) && playlistTracksSelected < static_cast<int>(songs.size())) setQueue(songs, playlistTracksSelected);
+            if ((pressed & SCE_CTRL_SQUARE) && playlist && playlistTracksSelected < static_cast<int>(playlist->tracks.size())) {
+                confirmReturnScreen = Screen::PlaylistTracks;
+                confirmAction = ConfirmAction::RemovePlaylistTrack;
+                confirmIndex = playlistTracksSelected;
+                const auto currentSongs = tracksFromPaths(library, playlist->tracks);
+                if (playlistTracksSelected >= 0 && playlistTracksSelected < static_cast<int>(currentSongs.size()))
+                    confirmItemName = currentSongs[playlistTracksSelected]->title;
+                else
+                    confirmItemName = "Cancion seleccionada";
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
+            }
+            if (pressed & SCE_CTRL_TRIANGLE) {
+                playlistAddSelected = 0;
+                playlistAddScroll = 0;
+                screen = Screen::PlaylistAddSongs;
+            }
+            if (pressed & SCE_CTRL_START) {
+                settingsSelected = 0;
+                settingsReturnScreen = Screen::PlaylistTracks;
+                screen = Screen::Settings;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = playlistReturnScreen;
+        } else if (screen == Screen::PlaylistAddSongs) {
+            const auto songs = sortedSongs(library);
+            const int count = static_cast<int>(songs.size());
+            clampList(count, 10, playlistAddSelected, playlistAddScroll);
+            if (pressed & SCE_CTRL_UP) moveList(-1, count, 10, playlistAddSelected, playlistAddScroll);
+            if (pressed & SCE_CTRL_DOWN) moveList(1, count, 10, playlistAddSelected, playlistAddScroll);
+            if ((pressed & SCE_CTRL_CROSS) && playlistAddSelected >= 0 && playlistAddSelected < count) {
+                playlists.addTrack(activePlaylist, songs[playlistAddSelected]->path);
+            }
+            if (pressed & SCE_CTRL_START) {
+                settingsSelected = 0;
+                settingsReturnScreen = Screen::PlaylistAddSongs;
+                screen = Screen::Settings;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::PlaylistTracks;
+        } else if (screen == Screen::AddToPlaylist) {
+            const int count = static_cast<int>(playlists.playlists().size()) + 1;
+            if (pressed & SCE_CTRL_UP) moveSimple(-1, count, addPlaylistSelected);
+            if (pressed & SCE_CTRL_DOWN) moveSimple(1, count, addPlaylistSelected);
+            if (pressed & SCE_CTRL_CROSS) {
+                std::string target;
+                if (addPlaylistSelected == static_cast<int>(playlists.playlists().size())) {
+                    const std::string requestedName = TextInput::prompt("Nombre de la playlist", "", 48);
+                    if (!requestedName.empty()) target = playlists.createPlaylist(requestedName);
+                } else if (addPlaylistSelected >= 0 && addPlaylistSelected < static_cast<int>(playlists.playlists().size())) {
+                    target = playlists.playlists()[addPlaylistSelected].name;
+                }
+                if (!target.empty() && !coverTargetSong.empty()) playlists.addTrack(target, coverTargetSong);
+                screen = Screen::NowPlaying;
+            }
+            if (pressed & SCE_CTRL_CIRCLE) screen = Screen::SongOptions;
         } else if (screen == Screen::Roots) {
             const int count = static_cast<int>(library.roots().size()) + 1;
             clampList(count, 8, rootsSelected, scroll);
@@ -922,13 +1320,58 @@ int main() {
                 }
             }
             if ((pressed & SCE_CTRL_SQUARE) && rootsSelected < static_cast<int>(library.roots().size())) {
-                if (library.removeRoot(static_cast<std::size_t>(rootsSelected))) {
-                    library.startScan();
-                    if (rootsSelected >= static_cast<int>(library.roots().size())) rootsSelected = static_cast<int>(library.roots().size()) - 1;
-                    if (rootsSelected < 0) rootsSelected = 0;
-                }
+                confirmReturnScreen = Screen::Roots;
+                confirmAction = ConfirmAction::RemoveMusicRoot;
+                confirmIndex = rootsSelected;
+                confirmItemName = library.roots()[rootsSelected];
+                confirmYesSelected = false;
+                screen = Screen::ConfirmDelete;
             }
             if (pressed & SCE_CTRL_CIRCLE) screen = Screen::Settings;
+        } else if (screen == Screen::ConfirmDelete) {
+            if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_UP | SCE_CTRL_DOWN))
+                confirmYesSelected = !confirmYesSelected;
+
+            if (pressed & SCE_CTRL_CIRCLE) {
+                screen = confirmReturnScreen;
+                confirmAction = ConfirmAction::None;
+                confirmIndex = -1;
+                confirmItemName.clear();
+                confirmYesSelected = false;
+            }
+
+            if (pressed & SCE_CTRL_CROSS) {
+                if (confirmYesSelected) {
+                    if (confirmAction == ConfirmAction::DeletePlaylist) {
+                        playlists.deletePlaylist(confirmItemName);
+                        if (confirmReturnScreen == Screen::Library) {
+                            const int newCount = static_cast<int>(playlists.playlists().size()) + 1;
+                            if (selected >= newCount) selected = std::max(0, newCount - 1);
+                        } else {
+                            if (playlistsSelected >= static_cast<int>(playlists.playlists().size()))
+                                playlistsSelected = static_cast<int>(playlists.playlists().size());
+                        }
+                    } else if (confirmAction == ConfirmAction::RemovePlaylistTrack) {
+                        if (confirmIndex >= 0) {
+                            playlists.removeTrack(activePlaylist, static_cast<std::size_t>(confirmIndex));
+                            if (playlistTracksSelected > 0) --playlistTracksSelected;
+                        }
+                    } else if (confirmAction == ConfirmAction::RemoveMusicRoot) {
+                        if (confirmIndex >= 0 && library.removeRoot(static_cast<std::size_t>(confirmIndex))) {
+                            library.startScan();
+                            if (rootsSelected >= static_cast<int>(library.roots().size()))
+                                rootsSelected = static_cast<int>(library.roots().size()) - 1;
+                            if (rootsSelected < 0) rootsSelected = 0;
+                        }
+                    }
+                }
+
+                screen = confirmReturnScreen;
+                confirmAction = ConfirmAction::None;
+                confirmIndex = -1;
+                confirmItemName.clear();
+                confirmYesSelected = false;
+            }
         } else if (screen == Screen::Mounts) {
             const int count = 3;
             if (pressed & SCE_CTRL_UP) moveSimple(-1, count, mountsSelected);
@@ -983,6 +1426,20 @@ int main() {
             }
         }
 
+        // SELECT se procesa una sola vez. Antes, al usar SELECT dentro de una
+        // playlist entrabamos a Ahora suena y el mismo frame lo cerraba otra vez.
+        const bool canOpenNowPlaying = screen == Screen::Library ||
+            screen == Screen::GroupTracks || screen == Screen::Playlists ||
+            screen == Screen::PlaylistTracks || screen == Screen::PlaylistAddSongs;
+        if ((pressed & SCE_CTRL_SELECT) && !selectedSong.empty()) {
+            if (screen == Screen::NowPlaying) {
+                screen = returnScreen;
+            } else if (canOpenNowPlaying) {
+                returnScreen = screen;
+                screen = Screen::NowPlaying;
+            }
+        }
+
         const bool playbackControls = screen == Screen::Library || screen == Screen::GroupTracks || screen == Screen::NowPlaying;
         if (playbackControls) {
             if ((pressed & SCE_CTRL_SQUARE) && screen != Screen::NowPlaying) player.togglePause();
@@ -990,38 +1447,61 @@ int main() {
             if (pressed & SCE_CTRL_RIGHT) player.seekRelative(5);
             if (pressed & SCE_CTRL_LTRIGGER) playAdjacent(-1, true);
             if (pressed & SCE_CTRL_RTRIGGER) playAdjacent(1, true);
-
-            if ((pressed & SCE_CTRL_SELECT) && !selectedSong.empty()) {
-                if (screen == Screen::NowPlaying) screen = returnScreen;
-                else {
-                    returnScreen = screen;
-                    screen = Screen::NowPlaying;
-                }
-            }
         }
 
-        if (player.consumeTrackFinished()) playAdjacent(1, false);
+        if (player.consumeTrackFinished()) {
+            if (repeatMode == 2 && playbackIndex >= 0) playQueueIndex(playbackIndex);
+            else playAdjacent(1, repeatMode == 1);
+        }
 
         if (screen == Screen::Library) {
-            drawLibrary(font, library, tab, selected, scroll, selectedSong, metadata, cover, player);
+            drawLibrary(font, library, playlists, tab, selected, scroll, selectedSong, metadata, cover, player);
         } else if (screen == Screen::GroupTracks) {
             const auto songs = tracksForGroup(library, groupTab, groupKey);
             drawGroupTracks(font, groupLabel, songs, groupSelected, groupScroll, selectedSong, metadata, cover, player);
         } else if (screen == Screen::NowPlaying) {
             visualizer.update(player);
-            drawNowPlaying(font, metadata, cover, player, visualizer, visualizerMode);
+            drawNowPlaying(font, metadata, cover, player, visualizer, visualizerMode, shuffleEnabled, repeatMode);
         } else if (screen == Screen::Settings) {
-            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Salir de PengPlayer"};
+            std::vector<std::string> items = {"Actualizar biblioteca", "Rutas de musica", "Apariencia", "Playlists", "Salir de PengPlayer"};
             drawMenu(font, "Ajustes", "Biblioteca y personalizacion", items, settingsSelected,
                      "X: seleccionar  |  O: volver");
         } else if (screen == Screen::Appearance) {
             drawAppearance(font, appearanceHue, preferences.accentHue());
         } else if (screen == Screen::SongOptions) {
-            std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original"};
+            std::vector<std::string> items = {"Cambiar caratula", "Restaurar caratula original", "Ver cola de reproduccion", "Anadir a playlist"};
             const std::string custom = preferences.customCoverFor(coverTargetSong);
             const std::string subtitle = custom.empty() ? "Sin caratula personalizada" : "Personalizada: " + shorten(custom, 64);
             drawMenu(font, "Opciones de cancion", subtitle, items, songOptionsSelected,
                      "X: seleccionar  |  O: volver");
+        } else if (screen == Screen::Queue) {
+            drawQueue(font, library, playbackQueue, playbackIndex, queueSelected, queueScroll);
+        } else if (screen == Screen::Playlists) {
+            std::vector<std::string> items = playlists.names();
+            items.push_back("+ Crear nueva playlist");
+            drawMenu(font, "Playlists", "X abrir/crear  |  □ eliminar  |  SELECT ahora suena  |  START ajustes", items, playlistsSelected,
+                     "Al crear una playlist se abre el teclado nativo para elegir su nombre");
+        } else if (screen == Screen::PlaylistTracks) {
+            const Playlist* playlist = playlists.find(activePlaylist);
+            const std::vector<const TrackMetadata*> songs = playlist ? tracksFromPaths(library, playlist->tracks) : std::vector<const TrackMetadata*>();
+            drawPlaylistTracks(font, activePlaylist, songs, playlistTracksSelected, playlistTracksScroll, selectedSong, metadata, cover, player);
+        } else if (screen == Screen::PlaylistAddSongs) {
+            drawPlaylistAddSongs(font, library, playlists, activePlaylist, playlistAddSelected, playlistAddScroll,
+                                 selectedSong, metadata, cover, player);
+        } else if (screen == Screen::AddToPlaylist) {
+            std::vector<std::string> items = playlists.names();
+            items.push_back("+ Crear nueva playlist");
+            drawMenu(font, "Anadir a playlist", shorten(metadata.title, 58), items, addPlaylistSelected,
+                     "X: anadir  |  O: volver");
+        } else if (screen == Screen::ConfirmDelete) {
+            std::string detail = "No se eliminara ningun archivo de musica.";
+            if (confirmAction == ConfirmAction::RemovePlaylistTrack)
+                detail = "Solo se quitara de esta playlist. El archivo de musica se conserva.";
+            else if (confirmAction == ConfirmAction::RemoveMusicRoot)
+                detail = "Solo se quitara esta ruta de PengPlayer. Tus archivos se conservan.";
+            else if (confirmAction == ConfirmAction::DeletePlaylist)
+                detail = "Se eliminara la playlist, pero no sus archivos de musica.";
+            drawConfirmDelete(font, confirmItemName, detail, confirmYesSelected);
         } else if (screen == Screen::Roots) {
             std::vector<std::string> items = library.roots();
             items.push_back("+ Anadir ruta de musica");
@@ -1046,6 +1526,7 @@ int main() {
 
     player.stop();
     cover.clear();
+    TextInput::shutdown();
     vita2d_wait_rendering_done();
     vita2d_free_pgf(font);
     vita2d_fini();

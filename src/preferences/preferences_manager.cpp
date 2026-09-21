@@ -40,6 +40,17 @@ void PreferencesManager::setVisualizerMode(int mode) {
     saveSettings();
 }
 
+void PreferencesManager::setShuffleEnabled(bool enabled) {
+    shuffle_enabled_ = enabled;
+    saveSettings();
+}
+
+void PreferencesManager::setRepeatMode(int mode) {
+    if (mode < 0 || mode > 2) mode = 0;
+    repeat_mode_ = mode;
+    saveSettings();
+}
+
 std::string PreferencesManager::customCoverFor(const std::string& trackPath) const {
     const auto it = custom_covers_.find(trackPath);
     return it == custom_covers_.end() ? std::string() : it->second;
@@ -70,6 +81,8 @@ void PreferencesManager::loadSettings() {
     int legacyAccent = -1;
     bool loadedHue = false;
     visualizer_mode_ = 0;
+    shuffle_enabled_ = false;
+    repeat_mode_ = 0;
 
     std::FILE* file = std::fopen(kSettingsPath, "rb");
     if (!file) return;
@@ -80,6 +93,8 @@ void PreferencesManager::loadSettings() {
         const std::string huePrefix = "accent_hue=";
         const std::string legacyPrefix = "accent=";
         const std::string visualizerPrefix = "visualizer_mode=";
+        const std::string shufflePrefix = "shuffle=";
+        const std::string repeatPrefix = "repeat_mode=";
         if (value.compare(0, huePrefix.size(), huePrefix) == 0) {
             accent_hue_ = std::atoi(value.substr(huePrefix.size()).c_str());
             accent_hue_ %= 360;
@@ -90,6 +105,11 @@ void PreferencesManager::loadSettings() {
         } else if (value.compare(0, visualizerPrefix.size(), visualizerPrefix) == 0) {
             visualizer_mode_ = std::atoi(value.substr(visualizerPrefix.size()).c_str());
             if (visualizer_mode_ < 0 || visualizer_mode_ > 4) visualizer_mode_ = 0;
+        } else if (value.compare(0, shufflePrefix.size(), shufflePrefix) == 0) {
+            shuffle_enabled_ = std::atoi(value.substr(shufflePrefix.size()).c_str()) != 0;
+        } else if (value.compare(0, repeatPrefix.size(), repeatPrefix) == 0) {
+            repeat_mode_ = std::atoi(value.substr(repeatPrefix.size()).c_str());
+            if (repeat_mode_ < 0 || repeat_mode_ > 2) repeat_mode_ = 0;
         }
     }
     std::fclose(file);
@@ -108,6 +128,8 @@ void PreferencesManager::saveSettings() const {
     if (!file) return;
     std::fprintf(file, "accent_hue=%d\n", accent_hue_);
     std::fprintf(file, "visualizer_mode=%d\n", visualizer_mode_);
+    std::fprintf(file, "shuffle=%d\n", shuffle_enabled_ ? 1 : 0);
+    std::fprintf(file, "repeat_mode=%d\n", repeat_mode_);
     std::fclose(file);
 }
 

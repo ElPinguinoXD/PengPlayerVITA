@@ -1,54 +1,72 @@
-# PengPlayer 0.6
+# PengPlayer 0.7
 
-PengPlayer es un reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado con VitaSDK, C++ y libvita2d.
+Reproductor de musica nativo y personalizable para PlayStation Vita, desarrollado con VitaSDK.
 
-## Novedades de la 0.6
+## Novedades de 0.7
 
-La 0.6 introduce visualizadores de audio en tiempo real. El motor de reproduccion publica una copia reducida del PCM exclusivamente para visualizacion; el audio que llega a SceAudioOut no se modifica.
+- Cola de reproduccion visible y editable.
+- Reproduccion aleatoria (shuffle) persistente.
+- Modos de repeticion: desactivado, repetir toda la cola y repetir una cancion.
+- Playlists persistentes guardadas en `ux0:data/PengPlayer/playlists.dat`.
+- Crear playlists directamente desde la Vita usando el teclado nativo para elegir el nombre.
+- Anadir la cancion actual a una playlist desde `Ahora suena > Triangulo`.
+- Reproducir una playlist completa y usar auto-siguiente dentro de ella.
+- Eliminar canciones de una playlist sin borrar el archivo original.
+- Reordenar elementos de la cola con L/R.
+- Eliminar elementos de la cola con Cuadrado (excepto la cancion que esta sonando).
+- Los estados Aleatorio y Repetir se guardan en `preferences.cfg`.
 
-### Modos de visualizacion
+## Controles nuevos
 
-En la pantalla **Ahora suena**, usa **Arriba / Abajo** para cambiar entre:
+### Ahora suena
+- `Cuadrado`: activar/desactivar aleatorio.
+- `START`: cambiar entre Repetir Off / Todo / Una.
+- `Triangulo > Ver cola`: abrir la cola actual.
+- `Triangulo > Anadir a playlist`: guardar la cancion actual en una playlist.
 
-1. **Caratula** - vista clasica con caratula y detalles tecnicos.
-2. **Espectro** - 32 bandas obtenidas mediante una FFT de 512 muestras.
-3. **Onda** - waveform en tiempo real de la señal PCM.
-4. **Circular** - espectro radial alrededor de la caratula.
-5. **Caratula + espectro** - caratula y barras de frecuencia en una sola vista.
+### Cola
+- `Arriba/Abajo`: seleccionar.
+- `X`: reproducir el elemento seleccionado.
+- `Cuadrado`: retirar de la cola.
+- `L/R`: mover el elemento seleccionado.
+- `O`: volver a Ahora suena.
 
-El modo elegido se guarda automaticamente en `ux0:data/PengPlayer/preferences.cfg` y se restaura al volver a abrir la aplicacion.
+### Playlists
+- `START > Ajustes > Playlists`.
+- `X`: abrir una playlist o crear una nueva.
+- Al crear una playlist se abre el teclado nativo de PS Vita para escribir el nombre.
+- Si el nombre ya existe, PengPlayer crea una variante unica como `Mi Playlist (2)`.
+- `Cuadrado`: eliminar playlist.
+- `SELECT`: abrir `Ahora suena` sin salir del apartado Playlists.
+- Dentro de una playlist, `X` reproduce y `Cuadrado` retira la cancion de esa playlist.
+- Dentro de una playlist, `SELECT` tambien abre `Ahora suena` y `O` regresa a la playlist.
 
-## Controles en Ahora suena
+## Funciones anteriores
 
-- **Arriba / Abajo:** cambiar visualizador
-- **X:** pausa / continuar
-- **Izquierda / Derecha:** -5 / +5 segundos
-- **L / R:** cancion anterior / siguiente
-- **Triangulo:** opciones de la cancion
-- **Circulo:** volver
-- **SELECT:** alternar entre biblioteca y Ahora suena
+PengPlayer conserva biblioteca por canciones/artistas/albumes/carpetas, rutas configurables, metadata, caratulas embebidas y personalizadas, crop cuadrado centrado, selector HUE, visualizadores, reproduccion automatica, seek y audio estable mediante SceAudioOut BGM.
 
-## Funciones acumuladas
+### Playlists dentro de la Biblioteca
 
-- Biblioteca por Canciones, Artistas, Albumes y Carpetas
-- Multiples rutas de musica configurables
-- MP3, FLAC, WAV, OGG, OPUS y AIFF
-- Reproduccion automatica de la siguiente cancion
-- Metadata y caratulas embebidas
-- Caratulas personalizadas por cancion
-- Crop cuadrado centrado de caratulas
-- Color de acento libre mediante selector HUE
-- Reproduccion inmediata y estable mediante SceAudioOut BGM
-- Visualizadores en tiempo real
+La Biblioteca ahora tiene cinco secciones al pulsar `△`:
 
-## Compilacion
+`Canciones → Artistas → Álbumes → Carpetas → Playlists`
 
-```bash
-cd /d/PROYECTOS/PengPlayer
-rm -rf build
-cmake -B build \
-  -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
-cmake --build build -j4
-```
+Desde `Playlists` puedes abrir una lista con `X`, crear una nueva usando el teclado nativo y eliminar una lista con `□`. Entrar a una playlist desde esta pestaña y pulsar `O` vuelve directamente a la Biblioteca.
 
-El VPK resultante se genera en `build/PengPlayer.vpk`.
+## Ajustes finales de la 0.7
+
+- `SELECT` funciona correctamente desde la lista de playlists y desde el interior de una playlist para abrir `Ahora suena` cuando hay una pista activa.
+- `START` abre Ajustes desde Playlists, desde una playlist y desde la pantalla de añadir canciones.
+- Dentro de una playlist, `△` abre `Añadir canciones`.
+- La pantalla `Añadir canciones` muestra toda la biblioteca; `X` añade la pista seleccionada y `[OK]` indica las que ya pertenecen a esa playlist.
+- `O` vuelve a la playlist sin detener la reproducción.
+
+## Confirmaciones de eliminacion
+
+Para evitar borrados accidentales, PengPlayer pide confirmacion antes de:
+
+- Eliminar una playlist.
+- Quitar una cancion de una playlist.
+- Quitar una ruta de musica de la biblioteca.
+
+La opcion segura `No` aparece seleccionada por defecto. Con `Izquierda/Derecha` se cambia entre `No` y `Si, eliminar`, `X` confirma y `O` cancela. Quitar una cancion de una playlist o una ruta de musica no borra los archivos originales.
